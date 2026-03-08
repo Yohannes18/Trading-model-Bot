@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jeafx.strategy.types import TrapAnalysis
+from quantara.strategy.types import TrapAnalysis
 
 
 class LiquidityTrapDetector:

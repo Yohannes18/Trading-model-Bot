@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.governance.governance_engine import GovernanceEngine
-from jeafx.state_machine import StressState
+from quantara.governance.governance_engine import GovernanceEngine
+from quantara.state_machine import StressState
 from tests.regression._harness import FakeDB, write_artifact
 
 

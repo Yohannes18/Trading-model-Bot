@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.config import StressLevel
-from jeafx.strategy.smc_engine import Candle as RefCandle
+from quantara.config import StressLevel
+from quantara.strategy.smc_engine import Candle as RefCandle
 
 
 ARTIFACT_ROOT = Path("tests/regression/artifacts")

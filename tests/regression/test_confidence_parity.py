@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.config import StressLevel
-from jeafx.strategy.confidence_engine import ConfidenceEngine
-from jeafx.strategy.smc_engine import SMCEngine
+from quantara.config import StressLevel
+from quantara.strategy.confidence_engine import ConfidenceEngine
+from quantara.strategy.smc_engine import SMCEngine
 from tests.regression._harness import as_legacy_candles, as_ref_candles, generate_ohlcv, stress_level_to_legacy, write_artifact
 
 

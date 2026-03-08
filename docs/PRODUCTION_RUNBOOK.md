@@ -1,15 +1,15 @@
-# JeaFX Production Runbook (Windows)
+# Quantara Production Runbook (Windows)
 
 ## 1) Pre-flight checks
 
-- Run all commands from project root (for example `C:\JeaFX`).
+- Run all commands from project root (for example `C:\Quantara`).
 - Python virtual environment exists at `.venv`.
 - Runtime folders exist: `data`, `logs`, `signals`, `cache`.
 - `.env` is configured with production credentials and risk parameters.
 - Dry run passes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m jeafx.main --test
+.\.venv\Scripts\python.exe -m quantara.main --test
 ```
 
 ## 2) Install background startup (Task Scheduler)
@@ -20,7 +20,7 @@ Run PowerShell as Administrator:
 powershell -ExecutionPolicy Bypass -File .\deploy\windows\install_task.ps1
 ```
 
-This creates task `JeaFXEngine` to auto-start at boot and restart on failure.
+This creates task `QuantaraEngine` to auto-start at boot and restart on failure.
 
 ## 3) Install log maintenance task
 
@@ -30,7 +30,7 @@ Run:
 powershell -ExecutionPolicy Bypass -File .\deploy\windows\install_log_cleanup_task.ps1
 ```
 
-This creates daily task `JeaFXLogCleanup` to rotate old logs.
+This creates daily task `QuantaraLogCleanup` to rotate old logs.
 
 ## 4) Health and readiness probes
 
@@ -52,19 +52,19 @@ Invoke-RestMethod http://127.0.0.1:8000/health
 Start task:
 
 ```powershell
-Start-ScheduledTask -TaskName "JeaFXEngine"
+Start-ScheduledTask -TaskName "QuantaraEngine"
 ```
 
 Stop task:
 
 ```powershell
-Stop-ScheduledTask -TaskName "JeaFXEngine"
+Stop-ScheduledTask -TaskName "QuantaraEngine"
 ```
 
 View latest logs:
 
 ```powershell
-Get-Content .\logs\jeafx.log -Tail 100
+Get-Content .\logs\quantara.log -Tail 100
 ```
 
 ## 6) Staged rollout recommendation
@@ -79,7 +79,7 @@ Get-Content .\logs\jeafx.log -Tail 100
 - Stop engine task immediately:
 
 ```powershell
-Stop-ScheduledTask -TaskName "JeaFXEngine"
+Stop-ScheduledTask -TaskName "QuantaraEngine"
 ```
 
 - Reduce risk in `.env`

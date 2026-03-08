@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from engine.liquidity_map_engine import LiquidityMapEngine
-from jeafx.strategy.smc_engine import Candle
+from quantara.strategy.smc_engine import Candle
 
 
 def _candles(n: int, base: float = 2300.0) -> list[Candle]:

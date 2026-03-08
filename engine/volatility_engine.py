@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from jeafx.strategy.types import SessionType, VolatilityAnalysis, VolatilityRegime
+from quantara.strategy.types import SessionType, VolatilityAnalysis, VolatilityRegime
 
 
 class VolatilityExpansionEngine:

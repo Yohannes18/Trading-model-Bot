@@ -1,4 +1,4 @@
-# JeaFX v2 Hybrid Model
+# Quantara v2 Hybrid Model
 
 Institutional-style, multi-model trading engine with strict risk governance, competitive model selection, and adaptive meta-learning.
 
@@ -6,9 +6,9 @@ This README is designed to be the single source of truth for understanding, runn
 
 ---
 
-## 1) What JeaFX Is
+## 1) What Quantara Is
 
-JeaFX is an event-driven trading engine that analyzes market structure, liquidity behavior, and macro context, then selects the best trade model through **model competition**.
+Quantara is an event-driven trading engine that analyzes market structure, liquidity behavior, and macro context, then selects the best trade model through **model competition**.
 
 Core goals:
 - Find high-quality setups through layered market intelligence.
@@ -51,7 +51,7 @@ Why this matters:
 
 ## 3) Competitive Model Architecture (How Decisions Are Made)
 
-JeaFX runs multiple strategy models on the same market snapshot:
+Quantara runs multiple strategy models on the same market snapshot:
 - Reversal model
 - Continuation (Expansion) model
 - Liquidity raid (Liquidity trap) model
@@ -107,7 +107,7 @@ This prevents runaway bias while still allowing gradual adaptation.
 
 ## 6) Operational Modes
 
-JeaFX supports three effective operational states through governance/execution behavior:
+Quantara supports three effective operational states through governance/execution behavior:
 
 - **ACTIVE**: real execution (orders placed, monitored, and managed)
 - **SHADOW**: paper-style decision logging (no live execution)
@@ -122,7 +122,7 @@ Recommended rollout:
 
 ## 7) Project Structure (High-Level)
 
-- `jeafx/` — application runtime (engine loop, API, execution, strategy, risk, governance)
+- `quantara/` — application runtime (engine loop, API, execution, strategy, risk, governance)
 - `engine/` — institutional intelligence and meta-learning modules
 - `scheduler/` — scheduled maintenance/update tasks (meta updates)
 - `config/` — runtime parameters and model weights
@@ -159,19 +159,19 @@ pip install fastapi uvicorn python-dotenv
 ### B) One-cycle smoke test (safe)
 
 ```powershell
-.\.venv\Scripts\python.exe -m jeafx.main --test --sim-only --no-telegram
+.\.venv\Scripts\python.exe -m quantara.main --test --sim-only --no-telegram
 ```
 
 ### C) Full loop in simulation mode
 
 ```powershell
-.\.venv\Scripts\python.exe -m jeafx.main --all --sim-only --no-telegram
+.\.venv\Scripts\python.exe -m quantara.main --all --sim-only --no-telegram
 ```
 
 ### D) API mode (monitoring)
 
 ```powershell
-.\.venv\Scripts\python.exe -m jeafx.main --api --sim-only --no-telegram
+.\.venv\Scripts\python.exe -m quantara.main --api --sim-only --no-telegram
 ```
 
 ---

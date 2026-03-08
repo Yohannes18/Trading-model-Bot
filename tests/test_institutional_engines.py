@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from engine.displacement_engine import DisplacementEngine
 from engine.liquidity_magnet_engine import LiquidityMagnetEngine
 from engine.macro_narrative_engine import MacroNarrativeEngine
-from jeafx.strategy.smc_engine import Candle
+from quantara.strategy.smc_engine import Candle
 
 
 class _Pool:

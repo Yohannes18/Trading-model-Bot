@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jeafx.strategy.types import ConfidenceResult
+from quantara.strategy.types import ConfidenceResult
 
 
 class TradeConfidenceEngine:

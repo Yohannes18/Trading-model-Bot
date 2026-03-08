@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.stress.stress_engine import StressEngine
+from quantara.stress.stress_engine import StressEngine
 from tests.regression._harness import FakeDB, write_artifact
 
 

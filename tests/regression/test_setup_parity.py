@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.engine import calc_levels
-from jeafx.strategy.smc_engine import Direction, SMCEngine
+from quantara.engine import calc_levels
+from quantara.strategy.smc_engine import Direction, SMCEngine
 from tests.regression._harness import as_legacy_candles, as_ref_candles, generate_ohlcv, write_artifact
 
 

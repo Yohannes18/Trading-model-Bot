@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass
 import statistics
 
-from jeafx.strategy.analysis_engine import AnalysisEngine
+from quantara.strategy.analysis_engine import AnalysisEngine
 from engine.meta_learning_engine import MetaLearningEngine, make_trade_history_row
 from .parameter_optimizer import OptimizationResult, optimize_parameters
 

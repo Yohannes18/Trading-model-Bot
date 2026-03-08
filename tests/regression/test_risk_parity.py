@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-import jeafx_engine as legacy
+import quantara_engine as legacy
 
-from jeafx.config import StressLevel
-from jeafx.database.db_manager import DatabaseManager
-from jeafx.risk.position_sizer import PositionSizer
-from jeafx.state_machine import StressState
+from quantara.config import StressLevel
+from quantara.database.db_manager import DatabaseManager
+from quantara.risk.position_sizer import PositionSizer
+from quantara.state_machine import StressState
 from tests.regression._harness import FakeDB, write_artifact
 
 

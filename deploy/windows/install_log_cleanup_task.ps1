@@ -7,7 +7,7 @@ if (-not (Test-Path $scriptPath)) {
     throw "rotate_logs.ps1 not found at $scriptPath"
 }
 
-$taskName = "JeaFXLogCleanup"
+$taskName = "QuantaraLogCleanup"
 $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
 $trigger = New-ScheduledTaskTrigger -Daily -At 03:00AM
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries

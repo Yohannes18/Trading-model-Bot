@@ -7,8 +7,8 @@ if (-not (Test-Path $pythonExe)) {
     throw "Python executable not found at $pythonExe. Create .venv first."
 }
 
-$taskName = "JeaFXEngine"
-$action = New-ScheduledTaskAction -Execute $pythonExe -Argument "-m jeafx.main --all" -WorkingDirectory $projectRoot
+$taskName = "QuantaraEngine"
+$action = New-ScheduledTaskAction -Execute $pythonExe -Argument "-m quantara.main --all" -WorkingDirectory $projectRoot
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Highest

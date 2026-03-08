@@ -1,9 +1,9 @@
 @echo off
-title JeaFX Trading Engine v5
+title Quantara Trading Engine v5
 cls
 
 echo ═══════════════════════════════════════════════
-echo   J e a F X   A d a p t i v e   E n g i n e
+echo   Q u a n t a r a   A d a p t i v e   E n g i n e
 echo   v5.0  —  SMC + Confidence + Stress + MT5
 echo ═══════════════════════════════════════════════
 echo.
@@ -29,8 +29,8 @@ if exist requirements.txt (
 )
 
 :start
-echo Starting JeaFX engine...
-python -m jeafx.main --all
+echo Starting Quantara engine...
+python -m quantara.main --all
 
 echo.
 echo ═══════════════════════════════════════════════

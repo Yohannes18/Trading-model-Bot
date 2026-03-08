@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jeafx.strategy.types import AMDPhase, LiquidityRaidPrediction, LiquidityZone, SessionType, VolatilityAnalysis
+from quantara.strategy.types import AMDPhase, LiquidityRaidPrediction, LiquidityZone, SessionType, VolatilityAnalysis
 
 
 @dataclass(frozen=True)

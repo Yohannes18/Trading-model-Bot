@@ -7,9 +7,9 @@ from datetime import datetime, timedelta, timezone
 from engine.confidence_engine import TradeConfidenceEngine
 from engine.inefficiency_engine import MarketInefficiencyEngine
 from engine.trap_detector import LiquidityTrapDetector
-from jeafx.strategy.analysis_engine import AnalysisEngine
-from jeafx.strategy.smc_engine import Candle
-from jeafx.strategy.types import AMDPhase, Direction, ModelResult, ModelType, NarrativeAnalysis, NarrativeEvent, TradeSetupProposal, VolatilityRegime
+from quantara.strategy.analysis_engine import AnalysisEngine
+from quantara.strategy.smc_engine import Candle
+from quantara.strategy.types import AMDPhase, Direction, ModelResult, ModelType, NarrativeAnalysis, NarrativeEvent, TradeSetupProposal, VolatilityRegime
 
 
 def _candles(n: int, base: float = 2300.0) -> list[Candle]:

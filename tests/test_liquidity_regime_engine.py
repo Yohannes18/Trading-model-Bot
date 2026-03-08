@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from engine.liquidity_regime_engine import LiquidityRegime, LiquidityRegimeEngine
-from jeafx.strategy.smc_engine import Candle
+from quantara.strategy.smc_engine import Candle
 
 
 def _base_candles(n: int, start: float = 2300.0, step: float = 0.25, wick: float = 0.2) -> list[Candle]:

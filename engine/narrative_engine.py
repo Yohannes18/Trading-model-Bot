@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jeafx.strategy.types import NarrativeAnalysis, NarrativeEvent, SessionType
+from quantara.strategy.types import NarrativeAnalysis, NarrativeEvent, SessionType
 
 
 @dataclass(frozen=True)

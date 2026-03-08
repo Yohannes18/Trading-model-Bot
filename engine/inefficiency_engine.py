@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from jeafx.strategy.types import InefficiencyMap, InefficiencyZone
+from quantara.strategy.types import InefficiencyMap, InefficiencyZone
 
 
 class MarketInefficiencyEngine:

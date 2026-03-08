@@ -7,17 +7,17 @@ if (-not (Test-Path $logDir)) {
 }
 
 $now = Get-Date -Format "yyyyMMdd-HHmmss"
-$mainLog = Join-Path $logDir "jeafx.log"
-$errorLog = Join-Path $logDir "jeafx.error.log"
+$mainLog = Join-Path $logDir "quantara.log"
+$errorLog = Join-Path $logDir "quantara.error.log"
 
 if (Test-Path $mainLog) {
-    Move-Item $mainLog (Join-Path $logDir "jeafx.$now.log") -Force
+    Move-Item $mainLog (Join-Path $logDir "quantara.$now.log") -Force
 }
 if (Test-Path $errorLog) {
-    Move-Item $errorLog (Join-Path $logDir "jeafx.error.$now.log") -Force
+    Move-Item $errorLog (Join-Path $logDir "quantara.error.$now.log") -Force
 }
 
-Get-ChildItem $logDir -Filter "jeafx*.log" |
+Get-ChildItem $logDir -Filter "quantara*.log" |
     Sort-Object LastWriteTime -Descending |
     Select-Object -Skip 30 |
     Remove-Item -Force
