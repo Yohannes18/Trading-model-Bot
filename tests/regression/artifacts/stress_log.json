@@ -1,0 +1,146 @@
+{
+  "legacy": [
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.3,
+      "rolling_winrate": 0.4,
+      "drawdown": 0.0392,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.5,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0245,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "MILD",
+      "rolling_expectancy": 0.286,
+      "rolling_winrate": 0.429,
+      "drawdown": 0.049,
+      "risk_multiplier": 0.8
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.625,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0186,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.444,
+      "rolling_winrate": 0.444,
+      "drawdown": 0.0373,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.55,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0078,
+      "risk_multiplier": 1.0
+    }
+  ],
+  "refactor": [
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.0,
+      "rolling_winrate": 0.0,
+      "drawdown": 0.0,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.3,
+      "rolling_winrate": 0.4,
+      "drawdown": 0.0392,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.5,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0245,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "MILD",
+      "rolling_expectancy": 0.286,
+      "rolling_winrate": 0.429,
+      "drawdown": 0.049,
+      "risk_multiplier": 0.8
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.625,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0186,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.444,
+      "rolling_winrate": 0.444,
+      "drawdown": 0.0373,
+      "risk_multiplier": 1.0
+    },
+    {
+      "level": "NONE",
+      "rolling_expectancy": 0.55,
+      "rolling_winrate": 0.5,
+      "drawdown": 0.0078,
+      "risk_multiplier": 1.0
+    }
+  ]
+}

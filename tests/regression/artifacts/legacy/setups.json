@@ -1,0 +1,65 @@
+[
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2333.53811,
+    "sl": 2331.30651,
+    "tp": 2340.2329
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2333.89194,
+    "sl": 2331.34087,
+    "tp": 2341.54515
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2335.64989,
+    "sl": 2331.3233,
+    "tp": 2348.62967
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "SELL",
+    "entry": 2349.1703,
+    "sl": 2353.18017,
+    "tp": 2337.1407
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "SELL",
+    "entry": 2347.65299,
+    "sl": 2353.19362,
+    "tp": 2331.03109
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2339.25824,
+    "sl": 2338.37315,
+    "tp": 2341.9135
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2296.78366,
+    "sl": 2295.336,
+    "tp": 2301.12665
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2294.50548,
+    "sl": 2292.81055,
+    "tp": 2299.59027
+  },
+  {
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "entry": 2295.03234,
+    "sl": 2292.81826,
+    "tp": 2301.67458
+  }
+]

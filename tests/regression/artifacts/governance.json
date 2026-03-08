@@ -1,0 +1,66 @@
+{
+  "legacy": [
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 0,
+      "reason": ""
+    },
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 1,
+      "reason": ""
+    },
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 1,
+      "reason": ""
+    },
+    {
+      "status": "DISABLED",
+      "can_trade": false,
+      "severe_count_ytd": 2,
+      "reason": "SEVERE stress triggered 2\u00d7 this year \u2014 locked 7d"
+    },
+    {
+      "status": "DISABLED",
+      "can_trade": false,
+      "severe_count_ytd": 2,
+      "reason": "Model DISABLED \u2014 locked until 15 Mar 12:32 UTC"
+    }
+  ],
+  "refactor": [
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 0,
+      "reason": ""
+    },
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 1,
+      "reason": ""
+    },
+    {
+      "status": "ACTIVE",
+      "can_trade": true,
+      "severe_count_ytd": 1,
+      "reason": ""
+    },
+    {
+      "status": "DISABLED",
+      "can_trade": false,
+      "severe_count_ytd": 2,
+      "reason": "SEVERE stress triggered 2\u00d7 this year \u2014 locked 7d"
+    },
+    {
+      "status": "DISABLED",
+      "can_trade": false,
+      "severe_count_ytd": 2,
+      "reason": "Model DISABLED \u2014 locked until 15 Mar 12:32 UTC"
+    }
+  ]
+}

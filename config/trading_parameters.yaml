@@ -1,0 +1,10 @@
+# Adaptive trading parameters for institutional analysis pipeline
+atr_window: 14
+liquidity_tolerance: 0.05
+trap_sensitivity: 1.0
+confidence_threshold: 72
+displacement_volume_multiplier: 1.5
+model_confidence_threshold: 70
+model_rr_min: 3
+model_ambiguity_delta: 10
+max_xau_sl_pips: 150

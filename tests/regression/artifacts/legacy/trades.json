@@ -1,0 +1,9 @@
+{
+  "lot_size": 0.13,
+  "risk_amount": 70.0,
+  "risk_percent": 1.0,
+  "adjusted_risk_percent": 0.7,
+  "stress_multiplier": 0.7,
+  "allowed": true,
+  "reason": "0.13 lots | 0.70% risk | stress MODERATE"
+}
