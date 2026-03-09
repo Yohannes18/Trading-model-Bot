@@ -79,8 +79,13 @@ class MT5Executor:
             log.error("MT5 not installed — cannot proceed without real MT5.")
             raise RuntimeError("MT5 not installed — real mode required.")
         if not self._mt5.initialize():
-            log.error("MT5 init failed — cannot proceed without real MT5.")
-            raise RuntimeError("MT5 initialization failed — real mode required.")
+            try:
+                self._mt5.shutdown()
+            except Exception:
+                pass
+            if not self._mt5.initialize():
+                log.error("MT5 init failed — cannot proceed without real MT5.")
+                raise RuntimeError("MT5 initialization failed — real mode required.")
         if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
             if not self._mt5.login(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER):
                 log.error("MT5 login failed — cannot proceed without real MT5.")
@@ -242,8 +247,15 @@ class MT5Executor:
             log.warning("order_blocked degraded=true pair=%s direction=%s", pair, direction)
             return None
 
+        if not self._mt5.initialize():
+            try:
+                self._mt5.shutdown()
+            except Exception:
+                pass
+            self._mt5.initialize()
+
         last_error: str | None = None
-        for attempt in range(1, self._max_order_retries + 1):
+        for attempt in range(3):
             # Inline spread / slippage guard just before each attempt to keep
             # protection close to the actual order_send call.
             precheck = self.validate_market(pair, direction)
@@ -262,6 +274,18 @@ class MT5Executor:
                 break
 
             try:
+                tick = self._mt5.symbol_info_tick(pair)
+                sym = self._mt5.symbol_info(pair)
+                if not tick or not sym:
+                    last_error = "no_tick_or_symbol"
+                    break
+                max_spread = MAX_SPREAD_POINTS * float(getattr(sym, "point", 0.0) or 0.0)
+                spread = float(tick.ask) - float(tick.bid)
+                if max_spread > 0 and spread > max_spread:
+                    last_error = f"spread_too_high:{spread:.6f}>{max_spread:.6f}"
+                    log.warning("order_spread_blocked pair=%s direction=%s spread=%.6f max=%.6f", pair, direction, spread, max_spread)
+                    return None
+
                 sym = self._mt5.symbol_info(pair)
                 if not sym:
                     last_error = "no_symbol_info"
@@ -290,7 +314,7 @@ class MT5Executor:
                         pair,
                         direction,
                         result.order,
-                        attempt,
+                        attempt + 1,
                     )
                     return int(result.order)
 
@@ -299,7 +323,7 @@ class MT5Executor:
                     "order_failed pair=%s direction=%s attempt=%s result=%s",
                     pair,
                     direction,
-                    attempt,
+                    attempt + 1,
                     result,
                 )
                 # Mark executor as degraded on hard MT5 errors so that heartbeat
@@ -308,18 +332,17 @@ class MT5Executor:
             except Exception as exc:
                 last_error = f"order_exc:{exc}"
                 self._handle_failure(last_error)
-                log.error("mt5_order_error pair=%s direction=%s attempt=%s error=%s", pair, direction, attempt, exc)
+                log.error("mt5_order_error pair=%s direction=%s attempt=%s error=%s", pair, direction, attempt + 1, exc)
 
-            if attempt < self._max_order_retries:
-                # Small backoff; this is sync and runs rarely at trade time.
-                time.sleep(min(1.0, 0.2 * attempt))
+            if attempt < 2:
+                time.sleep(2 ** attempt)
 
         if last_error:
             log.error(
                 "order_give_up pair=%s direction=%s attempts=%s last_error=%s",
                 pair,
                 direction,
-                self._max_order_retries,
+                3,
                 last_error,
             )
         return None

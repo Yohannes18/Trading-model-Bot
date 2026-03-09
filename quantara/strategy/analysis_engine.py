@@ -4,6 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from quantara.context.session_engine import get_session_context
+from quantara.context.volatility_regime_engine import detect_volatility_regime
+from quantara.liquidity.liquidity_memory_engine import LiquidityMemoryEngine
+from quantara.narrative.fundamental_narrative_engine import get_daily_narrative
+
 from .entry.fibonacci_engine import FibonacciEngine
 from .amd.phase_detector import AMDPhaseDetector
 from .entry.orderblock_engine import OrderBlockEngine
@@ -68,6 +73,7 @@ class AnalysisEngine:
         self._exp_model = ExpansionModel()
         self._rev_model = ReversalModel()
         self._trap_model = LiquidityTrapModel()
+        self._liquidity_memory = LiquidityMemoryEngine()
         self._params    = self._load_trading_parameters()
         self._model_weights = self._load_model_weights()
 
@@ -102,6 +108,12 @@ class AnalysisEngine:
             result.briefing="Insufficient candle data."
             return result
         price=candles_m30[-1].close
+        session_context = get_session_context(now)
+        session_weight = float(session_context.get("weight", 1.0))
+        volatility_context = detect_volatility_regime(candles_m30)
+        volatility_weight = float(volatility_context.get("weight", 1.0))
+        daily_narrative = get_daily_narrative(pair)
+        narrative_score = float(daily_narrative.get("score", 1.0))
 
         # 1. Macro
         try: macro=self._macro.evaluate()
@@ -184,28 +196,15 @@ class AnalysisEngine:
         # 9. H&S
         hs=self._hs.detect(candles_h1 or candles_m30)
 
-        # Narrative no-trade gating
         conflicting=self._has_conflicting_narrative(narr)
-        if narr.strength < 0.35 or narr.bias == "NEUTRAL" or conflicting:
-            from .types import ModelResult, ModelType, Direction
-            reason = "narrative_low_strength" if narr.strength < 0.35 else (
-                "narrative_neutral_bias" if narr.bias == "NEUTRAL" else "narrative_conflict"
-            )
-            result.recommended_model=ModelType.NO_TRADE
-            result.model_result=ModelResult(ModelType.NO_TRADE,0.0,Direction.NONE,None,[],reason)
-            result.has_trade_setup=False
-            if "heatmap_base" not in analysis_cache:
-                analysis_cache["heatmap_base"] = self._heatmap.build(price,buy,sell,candles_m30,candles_d1,fvg_low,fvg_high,0.0,0.0)
-            hm=analysis_cache["heatmap_base"]
-            result.liquidity_bias=hm.bias
-            result.liquidity_zones_above=hm.zones_above
-            result.liquidity_zones_below=hm.zones_below
-            result.briefing=self._briefing(result,
-                                          ModelResult(ModelType.EXPANSION,0.0,Direction.NONE,None,[],"Blocked by narrative"),
-                                          ModelResult(ModelType.REVERSAL,0.0,Direction.NONE,None,[],"Blocked by narrative"),
-                                          ModelResult(ModelType.LIQUIDITY_TRAP,0.0,Direction.NONE,None,[],"Blocked by narrative"),
-                                          result.model_result,atr,narr,hm,buy,sell,price)
-            return result
+        if narr.bias == "NEUTRAL" and narrative_score > 0.8:
+            narrative_score = 0.8
+        if narr.strength < self._params.get("narrative_strength_min", 0.45):
+            narrative_score = min(narrative_score, max(0.55, narr.strength + 0.2))
+        if conflicting:
+            narrative_score *= 0.8
+
+        liquidity_memory = self._liquidity_memory.update(candles_d1, price)
 
         # 8. Liquidity heatmap
         if "heatmap_base" not in analysis_cache:
@@ -397,8 +396,8 @@ class AnalysisEngine:
         liquidity_bias = self._liquidity_map_confidence_bias(liq_map, raid.raid_direction, price, max(atr, 0.1))
         magnet_bonus = magnet_result.primary_magnet.magnet_strength * 0.2 if magnet_result.primary_magnet is not None else 0.0
         adjusted_liquidity_strength = max(0.0, min(1.0, base_liquidity_strength + liquidity_bias + magnet_bonus))
-        session_weight = 1.0 if session in (SessionType.LONDON, SessionType.LONDON_NY_OVERLAP) else (0.8 if session == SessionType.NEW_YORK else 0.6)
-        volatility_alignment = 1.0 if volx.regime == VolatilityRegime.EXPANSION else (0.7 if volx.regime == VolatilityRegime.NORMAL else 0.45)
+        session_weight = float(session_context.get("weight", 1.0))
+        volatility_alignment = float(volatility_context.get("weight", 1.0))
         macro_alignment = self._macro_alignment(macro_narrative, narr)
         trap_risk_01 = min(1.0, trap_analysis.trap_probability / 100.0)
 
@@ -412,6 +411,23 @@ class AnalysisEngine:
         exp, rev, trap = self._adjust_models_with_displacement(exp, rev, trap, displacement_result)
         exp, rev, trap = self._adjust_models_with_magnet(exp, rev, trap, magnet_result)
         exp, rev, trap = self._apply_meta_model_weights(exp, rev, trap)
+        liquidity_memory_score = float(liquidity_memory.get("score", 0.5))
+        liquidity_memory_side = str(liquidity_memory.get("side", "NONE"))
+
+        for model in (exp, rev, trap):
+            base_confidence = model.confidence
+            confidence = base_confidence
+            confidence *= narrative_score
+            confidence *= session_weight
+            confidence *= volatility_weight
+            if model.setup is not None:
+                direction = model.setup.direction.value
+                if (direction == "BUY" and liquidity_memory_side == "BUY") or (direction == "SELL" and liquidity_memory_side == "SELL"):
+                    confidence *= (1.0 + 0.1 * liquidity_memory_score)
+                elif liquidity_memory_side in ("BUY", "SELL"):
+                    confidence *= max(0.7, 1.0 - 0.15 * liquidity_memory_score)
+            model.confidence = round(max(0.0, min(1.0, confidence)), 3)
+
         best=self._select_competitive_model(
             exp=exp,
             rev=rev,
@@ -491,6 +507,14 @@ class AnalysisEngine:
 
         best=result.model_result if result.model_result is not None else best
         result.briefing=self._briefing(result,exp,rev,trap,best,atr,narr,hm,buy,sell,price)
+        log.info(
+            "Session: %s | Volatility: %s | Narrative: %s | Liquidity Target: %s | Confidence: %.2f",
+            session_context.get("session", session.value),
+            volatility_context.get("regime", volx.regime.value),
+            str(daily_narrative.get("bias", narr.bias)).upper(),
+            liquidity_memory.get("target", "NONE"),
+            result.confidence_result.score / 100.0,
+        )
         log.info("analysis pair=%s session=%s vol=%s exp=%.2f rev=%.2f trap=%.2f model=%s setup=%s",
              pair,session.value,volx.regime.value,exp.confidence,rev.confidence,trap.confidence,
                  best.model_type.value,result.has_trade_setup)
@@ -629,6 +653,11 @@ class AnalysisEngine:
             "model_rr_min": 3.0,
             "model_ambiguity_delta": 10.0,
             "max_xau_sl_pips": 150.0,
+            "session_mode_enabled": 1.0,
+            "narrative_strength_min": 0.45,
+            "low_risk_session_threshold": 0.52,
+            "low_risk_position_multiplier": 0.3,
+            "low_risk_sl_multiplier": 0.8,
         }
         cfg_path = Path("config/trading_parameters.yaml")
         if not cfg_path.exists():
@@ -648,6 +677,9 @@ class AnalysisEngine:
                 try:
                     parsed[key] = float(value)
                 except ValueError:
+                    lower = value.lower().strip('"').strip("'")
+                    if lower in ("true", "false"):
+                        parsed[key] = 1.0 if lower == "true" else 0.0
                     continue
         except Exception:
             return defaults

@@ -20,11 +20,23 @@ if not exist .venv (
 
 REM Activate virtual environment
 call .venv\Scripts\activate
+if errorlevel 1 (
+    echo Failed to activate virtual environment.
+    pause
+    exit /b 1
+)
 
 REM Install requirements
 if exist requirements.txt (
-    echo Installing/checking requirements...
-    pip install -r requirements.txt --quiet
+    echo Installing/checking requirements from requirements.txt...
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    if errorlevel 1 (
+        echo.
+        echo Dependency installation failed. Fix the issue and run again.
+        pause
+        exit /b 1
+    )
     echo.
 )
 
