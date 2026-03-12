@@ -216,18 +216,15 @@ class MT5Executor:
         }
         tf_id = tf_map.get(tf, self._mt5.TIMEFRAME_M30)
         try:
-            if not self._mt5.symbol_select(pair, True):
-                raise RuntimeError(f"MT5 symbol_select failed for pair={pair}")
+            self._mt5.symbol_select(pair, True)
             rates = self._mt5.copy_rates_from_pos(pair, tf_id, 0, n)
-            if rates is None:
-                mt5_error = None
-                try:
-                    mt5_error = self._mt5.last_error()
-                except Exception:
-                    mt5_error = None
-                raise RuntimeError(f"MT5 returned no rates for pair={pair}, tf={tf}, n={n}, last_error={mt5_error}")
-            if len(rates) < 50:
-                raise RuntimeError(f"Insufficient MT5 rates for pair={pair}, tf={tf}: got={len(rates)}, required_min=50")
+            if rates is None or len(rates) < 50:
+                raise RuntimeError(
+                    f"NO REAL MT5 DATA for {pair} {tf} (rates=None or too few). "
+                    "Fix: MT5 terminal open + logged in? Symbols visible in Market Watch? "
+                    "History Center (F2) downloaded for M30/H1/D1?"
+                )
+
             self._last_success_at = time.time()
             return [
                 Candle(
@@ -242,8 +239,7 @@ class MT5Executor:
             ]
         except Exception as exc:
             self._handle_failure(f"candles_failed:{exc}")
-            log.error("mt5_candles_fetch_failed pair=%s tf=%s n=%s error=%s", pair, tf, n, exc)
-            raise RuntimeError(f"MT5 candle fetch failed for pair={pair}, tf={tf}, n={n}: {exc}") from exc
+            raise RuntimeError(f"MT5 real data failed: {exc}") from exc
 
     def validate_market(self, pair: str, direction: str) -> ExecutionPrecheck:
         if self._sim:
