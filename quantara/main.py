@@ -4,6 +4,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -27,16 +28,59 @@ from .risk.risk_validator import RiskValidator
 from .strategy.analysis_engine import AnalysisEngine
 from .strategy.confidence_engine import ConfidenceEngine
 from .strategy.fundamental_filter import FundamentalFilter
+from .strategy.liquidity.liquidity_map import LiquidityMap
+from .strategy.narrative.session_analyzer import SessionAnalyzer
 from .strategy.smc_engine import Candle
 from .stress.stress_engine import StressEngine
 from .telegram.bot_handler import CommandListener, StatusNotifier, TelegramBot
-from quantara.narrative.fundamental_narrative_engine import get_daily_narrative
+from .macro.macro_engine import MacroEngine
 
 
-_SCHEDULER: BackgroundScheduler | None = None
+_SCHEDULER: Any | None = None
 
 
-def _start_daily_macro_scheduler(bot: TelegramBot) -> None:
+def _format_liquidity_pool(levels: list[object], max_items: int = 3) -> str:
+    if not levels:
+        return "N/A"
+    shown = levels[:max_items]
+    chunks: list[str] = []
+    for level in shown:
+        price = float(getattr(level, "price", 0.0))
+        level_type = str(getattr(level, "level_type", "POOL"))
+        score = int(getattr(level, "score", 0))
+        chunks.append(f"{level_type}@{price:.2f}(S{score})")
+    return ", ".join(chunks)
+
+
+def _build_pre_london_market_brief(execution: MT5Executor, pair: str = "XAUUSD") -> str:
+    macro_snapshot = MacroEngine().get_snapshot()
+
+    candles_m30 = execution.get_candles(pair, "M30", 320)
+    candles_h1 = execution.get_candles(pair, "H1", 220)
+    candles_h4 = execution.get_candles(pair, "H4", 120)
+    candles_d1 = execution.get_candles(pair, "D1", 40)
+
+    asia = SessionAnalyzer().analyze_asia(candles_h1)
+    buy_levels, sell_levels = LiquidityMap().build(candles_m30, candles_h4, candles_d1, asia.high, asia.low)
+
+    dxy_text = "N/A" if macro_snapshot.dxy is None else f"{macro_snapshot.dxy:.2f} ({(macro_snapshot.dxy_change_pct or 0.0):+.2f}%)"
+    us10y_text = "N/A" if macro_snapshot.us10y is None else f"{macro_snapshot.us10y:.2f} ({(macro_snapshot.us10y_change_bps or 0.0):+.1f}bps)"
+    asia_text = f"{asia.low:.2f} - {asia.high:.2f} ({asia.range_pips:.0f} pips, {asia.classification})"
+
+    return (
+        "📘 *Quantara Market Brief*\n"
+        f"Pair: `{pair}`\n"
+        f"DXY: `{dxy_text}`\n"
+        f"US10Y: `{us10y_text}`\n"
+        f"Asia Range: `{asia_text}`\n"
+        f"Liquidity Pools Above: `{_format_liquidity_pool(sell_levels)}`\n"
+        f"Liquidity Pools Below: `{_format_liquidity_pool(buy_levels)}`\n"
+        f"Bias: `{macro_snapshot.gold_bias.value} | pressure={macro_snapshot.pressure:+.2f}`\n"
+        f"Calendar Risk: `{'HIGH' if macro_snapshot.calendar_risk else 'LOW'}` (high impact events: {macro_snapshot.high_impact_events})"
+    )
+
+
+def _start_daily_macro_scheduler(bot: TelegramBot, execution: MT5Executor) -> None:
     global _SCHEDULER
     if BackgroundScheduler is None:
         log.warning("daily_macro_scheduler_unavailable apscheduler_not_installed")
@@ -45,20 +89,17 @@ def _start_daily_macro_scheduler(bot: TelegramBot) -> None:
         return
 
     def send_daily_macro_report() -> None:
-        narrative = get_daily_narrative("XAUUSD")
-        msg = (
-            "📣 *Daily Macro Report*\n"
-            f"Pair: `{narrative.get('pair', 'XAUUSD')}`\n"
-            f"Narrative: `{narrative.get('bias', 'NEUTRAL')}`\n"
-            f"Strength: `{float(narrative.get('score', 0.0)):.2f}`\n"
-            f"Summary: {narrative.get('summary', 'N/A')}"
-        )
-        bot.send(msg)
+        try:
+            msg = _build_pre_london_market_brief(execution, pair="XAUUSD")
+            bot.send(msg)
+            log.info("pre_london_market_brief_sent pair=%s", "XAUUSD")
+        except Exception as exc:
+            log.error("pre_london_market_brief_failed error=%s", exc)
 
     _SCHEDULER = BackgroundScheduler(timezone="UTC")
-    _SCHEDULER.add_job(send_daily_macro_report, "cron", hour=3, minute=0)
+    _SCHEDULER.add_job(send_daily_macro_report, "cron", hour=6, minute=0)
     _SCHEDULER.start()
-    log.info("daily_macro_scheduler_started utc=03:00 eat=06:00")
+    log.info("pre_london_brief_scheduler_started utc=06:00")
 
 
 def _stop_daily_macro_scheduler() -> None:
@@ -70,6 +111,9 @@ def _stop_daily_macro_scheduler() -> None:
     except Exception:
         pass
     _SCHEDULER = None
+
+
+# === UPGRADE STEP 6 COMPLETED ===
 
 
 def _candles_to_frame(candles: list[Candle]) -> pd.DataFrame:
@@ -107,15 +151,12 @@ def _load_cached_or_mt5_candles(execution: MT5Executor, pair: str, tf: str, n: i
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = cache_dir / f"{pair.lower()}_{tf.lower()}.parquet"
 
-    if cache_path.exists():
+    for legacy_cache in cache_dir.glob("*.parquet"):
         try:
-            df = pd.read_parquet(cache_path)
-            cached = _frame_to_candles(df)
-            if len(cached) >= max(100, n // 2):
-                log.info("backtest_cache_hit path=%s rows=%s", cache_path, len(cached))
-                return cached[-n:]
+            legacy_cache.unlink(missing_ok=True)
+            log.info("legacy_candle_cache_removed path=%s", legacy_cache)
         except Exception as exc:
-            log.warning("backtest_cache_read_failed path=%s error=%s", cache_path, exc)
+            log.error("legacy_candle_cache_remove_failed path=%s error=%s", legacy_cache, exc)
 
     candles = execution.get_candles(pair, tf, n)
     try:
@@ -124,6 +165,9 @@ def _load_cached_or_mt5_candles(execution: MT5Executor, pair: str, tf: str, n: i
     except Exception as exc:
         log.warning("backtest_cache_write_failed path=%s error=%s", cache_path, exc)
     return candles
+
+
+
 
 
 def _build_engine(sim_only: bool = False, no_telegram: bool = False) -> tuple[QuantaraEngine, DatabaseManager, MT5Executor, StressEngine, GovernanceEngine]:
@@ -137,7 +181,7 @@ def _build_engine(sim_only: bool = False, no_telegram: bool = False) -> tuple[Qu
     governance = GovernanceEngine(db)
 
     bot = TelegramBot(enabled=not no_telegram)
-    _start_daily_macro_scheduler(bot)
+    _start_daily_macro_scheduler(bot, execution)
     command_listener = CommandListener(bot)
     notifier = StatusNotifier(bot)
     monitor = PositionMonitor(db, execution, stress, governance, notifier)
@@ -220,6 +264,16 @@ def _setup_telegram() -> None:
     print(f"TELEGRAM_CHAT_ID={chat_id}")
 
 
+def run_full_market_intelligence_smoke_test(no_telegram: bool = False) -> None:
+    engine, db, execution, stress, governance = _build_engine(sim_only=False, no_telegram=no_telegram)
+    try:
+        asyncio.run(engine.run_once())
+        print("Quantara v6 — FULL MARKET INTELLIGENCE ACTIVE")
+    finally:
+        execution.disconnect()
+        _stop_daily_macro_scheduler()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Quantara modular trading engine")
     parser.add_argument("--all", action="store_true", help="Run full engine")
@@ -229,6 +283,7 @@ def main() -> None:
     parser.add_argument("--sim-only", action="store_true", help="Force simulation mode (no MT5 connection attempts)")
     parser.add_argument("--no-telegram", action="store_true", help="Disable Telegram network calls")
     parser.add_argument("--setup-telegram", action="store_true", help="Configure Telegram")
+    parser.add_argument("--smoke-test", action="store_true", help="Run full-intelligence smoke test in real mode")
     parser.add_argument("--pair", default="XAUUSD", help="Pair for backtest")
     parser.add_argument("--tf", default="M30", help="Timeframe for backtest")
     parser.add_argument("--candles", type=int, default=0, help="Backtest candle count (0=auto by timeframe)")
@@ -238,6 +293,10 @@ def main() -> None:
 
     if args.setup_telegram:
         _setup_telegram()
+        return
+
+    if args.smoke_test:
+        run_full_market_intelligence_smoke_test(no_telegram=args.no_telegram)
         return
 
     if args.api:
@@ -309,3 +368,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# === UPGRADE FINALIZATION COMPLETED ===

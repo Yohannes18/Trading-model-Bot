@@ -1,5 +1,4 @@
 .env
-.env.*
 
 __pycache__/
 *.py[cod]
@@ -14,6 +13,8 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+*.json
+*.csv
 
 .DS_Store
 Thumbs.db

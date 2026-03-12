@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import time
-import random
 import importlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..config import (
@@ -90,8 +89,16 @@ class MT5Executor:
             if not self._mt5.login(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER):
                 log.error("MT5 login failed — cannot proceed without real MT5.")
                 raise RuntimeError("MT5 login failed — real mode required.")
+
+        required_symbols: tuple[str, ...] = ("XAUUSD", "EURUSD", "GBPUSD")
+        for symbol in required_symbols:
+            if not self._mt5.symbol_select(symbol, True):
+                log.error("mt5_symbol_select_failed symbol=%s", symbol)
+                raise RuntimeError(f"MT5 symbol_select failed for required symbol: {symbol}")
+
+        self._last_success_at = time.time()
         self.ok = True
-        log.info("mt5_connected")
+        log.info("mt5_connected symbols=%s", required_symbols)
         self._mark_recovered()
         return True
 
@@ -112,7 +119,25 @@ class MT5Executor:
         self._on_recovered = on_recovered
 
     def is_healthy(self) -> bool:
-        return not self._degraded
+        return bool(self.health_check().get("healthy", False))
+
+    def last_success_at(self) -> float | None:
+        return self._last_success_at
+
+    def health_check(self, max_stale_seconds: int = 300) -> dict[str, object]:
+        now = time.time()
+        stale_seconds = None if self._last_success_at is None else max(0.0, now - self._last_success_at)
+        stale = stale_seconds is None or stale_seconds > float(max_stale_seconds)
+        healthy = self.ok and (not self._degraded) and (not stale)
+        return {
+            "healthy": healthy,
+            "degraded": self._degraded,
+            "ok": self.ok,
+            "last_error": self._last_error,
+            "last_success_at": self._last_success_at,
+            "stale_seconds": stale_seconds,
+            "max_stale_seconds": max_stale_seconds,
+        }
 
     def last_error(self) -> str | None:
         return self._last_error
@@ -180,7 +205,9 @@ class MT5Executor:
 
     def get_candles(self, pair: str, tf: str, n: int = 200) -> list[Candle]:
         if self._sim:
-            return self._sim_candles(pair, tf, n)
+            raise RuntimeError("Simulation candles are disabled in MT5Executor.get_candles(). Use real MT5 market data.")
+        if not self.ok:
+            raise RuntimeError("MT5 executor is not connected. Call connect() before requesting candles.")
         tf_map = {
             "M30": self._mt5.TIMEFRAME_M30,
             "H1": self._mt5.TIMEFRAME_H1,
@@ -189,9 +216,18 @@ class MT5Executor:
         }
         tf_id = tf_map.get(tf, self._mt5.TIMEFRAME_M30)
         try:
+            if not self._mt5.symbol_select(pair, True):
+                raise RuntimeError(f"MT5 symbol_select failed for pair={pair}")
             rates = self._mt5.copy_rates_from_pos(pair, tf_id, 0, n)
             if rates is None:
-                return self._sim_candles(pair, tf, n)
+                mt5_error = None
+                try:
+                    mt5_error = self._mt5.last_error()
+                except Exception:
+                    mt5_error = None
+                raise RuntimeError(f"MT5 returned no rates for pair={pair}, tf={tf}, n={n}, last_error={mt5_error}")
+            if len(rates) < 50:
+                raise RuntimeError(f"Insufficient MT5 rates for pair={pair}, tf={tf}: got={len(rates)}, required_min=50")
             self._last_success_at = time.time()
             return [
                 Candle(
@@ -206,7 +242,8 @@ class MT5Executor:
             ]
         except Exception as exc:
             self._handle_failure(f"candles_failed:{exc}")
-            return self._sim_candles(pair, tf, n)
+            log.error("mt5_candles_fetch_failed pair=%s tf=%s n=%s error=%s", pair, tf, n, exc)
+            raise RuntimeError(f"MT5 candle fetch failed for pair={pair}, tf={tf}, n={n}: {exc}") from exc
 
     def validate_market(self, pair: str, direction: str) -> ExecutionPrecheck:
         if self._sim:
@@ -488,30 +525,4 @@ class MT5Executor:
             trade.state = TradeState.MANAGING
         return trade
 
-    def _sim_candles(self, pair: str, tf: str, n: int) -> list[Candle]:
-        seed = hash(f"{pair}{tf}{datetime.now(tz=timezone.utc).hour}") % 9999
-        rng = random.Random(seed)
-        base = {"XAUUSD": 2300, "EURUSD": 1.085, "GBPUSD": 1.270}.get(pair, 1.0)
-        atr = {"XAUUSD": 8.0, "EURUSD": 0.0008, "GBPUSD": 0.001}.get(pair, 0.001)
-        candles: list[Candle] = []
-        price = float(base)
-        trend = rng.choice([-1, 1])
-        for i in range(n):
-            if i % 30 == 0:
-                trend = rng.choice([-1, 1])
-            o = price
-            c = o + trend * atr * rng.uniform(0.1, 0.9) + rng.gauss(0, atr * 0.3)
-            h = max(o, c) + atr * rng.uniform(0.1, 0.5)
-            l = min(o, c) - atr * rng.uniform(0.1, 0.5)
-            candles.append(
-                Candle(
-                    time=datetime.now(tz=timezone.utc) - timedelta(minutes=(n - i) * 30),
-                    open=round(o, 5),
-                    high=round(h, 5),
-                    low=round(l, 5),
-                    close=round(c, 5),
-                    volume=float(rng.randint(100, 5000)),
-                )
-            )
-            price = c
-        return candles
+    # === UPGRADE STEP 1 COMPLETED ===

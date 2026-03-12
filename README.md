@@ -1,5 +1,20 @@
 # Quantara v2 Hybrid Model
 
+## Quantara v2 Upgrade Summary (March 2026)
+
+This release introduces major institutional upgrades:
+- Macro intelligence layer (DXY, US10Y, calendar, gold bias)
+- Narrative integration (macro/narrative context)
+- Telegram reporting and structured logging
+- Trade explainability layer (TradeExplainer)
+- Confidence formula upgrade and explicit ambiguity gating
+- Dynamic risk scaling and hard news-risk block
+- PDH/PDL sweep detection
+- Explicit pipeline ordering and robust governance
+- Real-mode smoke test CLI option for production validation
+
+All features validated with diagnostics and targeted tests. See below for details.
+
 Institutional-style, multi-model trading engine with strict risk governance, competitive model selection, and adaptive meta-learning.
 
 This README is designed to be the single source of truth for understanding, running, and operating the system.
@@ -38,6 +53,10 @@ This is the official pipeline order used by the engine:
 14. Model Competition  
 15. Confidence (per-model)  
 16. Risk + Governance Gate  
+17. Trade Explainability Layer  
+18. PDH/PDL Sweep Detector  
+19. Structured Logging & Telegram Reporting  
+20. Real-mode Smoke Test CLI  
 17. Execution Engine  
 18. Position Monitor  
 19. Meta-Learning Update
@@ -112,6 +131,16 @@ Quantara supports three effective operational states through governance/executio
 - **ACTIVE**: real execution (orders placed, monitored, and managed)
 - **SHADOW**: paper-style decision logging (no live execution)
 - **DISABLED**: analysis can run, trading blocked by governance
+
+### New: Real-mode Smoke Test CLI
+
+To validate production readiness, run:
+
+```bash
+python -m quantara.main --smoke-test --no-telegram
+```
+
+This performs a real-mode pipeline check without live trading or Telegram output.
 
 Recommended rollout:
 1. Shadow period
@@ -244,6 +273,12 @@ Run full suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
+```
+
+Run real-mode smoke test:
+
+```bash
+python -m quantara.main --smoke-test --no-telegram
 ```
 
 ---

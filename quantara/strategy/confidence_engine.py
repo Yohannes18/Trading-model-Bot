@@ -84,36 +84,53 @@ class ConfidenceEngine:
         stress: StressLevel,
         volatility_regime: str,
         risk_conditions_ok: bool,
+        session_multiplier: float = 1.0,
     ) -> ConfidenceResult:
         result = ConfidenceResult()
-        structure = 18 if any("BOS" in s or "MSS" in s or "H&S" in s for s in model_signals) else 8
-        liquidity = 18 if any("Liquidity" in s or "Sweep" in s or "Trap" in s for s in model_signals) else 8
-        fundamentals = max(0, min(20, 10 + fund_score))
-        if volatility_regime == "EXPANSION":
-            volatility = 16
-        elif volatility_regime == "COMPRESSION":
-            volatility = 12
-        else:
-            volatility = 8
-        risk_conditions = 20 if (risk_conditions_ok and rr >= 3.0) else 8
+        structure_raw = 0.65 if any("BOS" in s or "MSS" in s or "H&S" in s for s in model_signals) else 0.35
+        structure = max(0.0, min(1.0, (structure_raw * 0.7) + (max(0.0, min(1.0, model_confidence)) * 0.3)))
 
-        model_component = max(0, min(20, round(model_confidence * 20)))
+        liquidity_raw = 0.70 if any("Liquidity" in s or "Sweep" in s or "Trap" in s for s in model_signals) else 0.35
+        rr_bonus = 0.10 if rr >= 3.0 else (0.05 if rr >= 2.0 else -0.05)
+        liquidity = max(0.0, min(1.0, liquidity_raw + rr_bonus))
+
+        session = max(0.0, min(1.0, session_multiplier))
+        macro = max(0.0, min(1.0, (fund_score + 10.0) / 20.0))
+        if volatility_regime == "EXPANSION":
+            volatility = 1.0
+        elif volatility_regime == "COMPRESSION":
+            volatility = 0.4
+        else:
+            volatility = 0.7
+
+        weighted_confidence = (
+            structure * 0.35
+            + liquidity * 0.25
+            + session * 0.15
+            + macro * 0.15
+            + volatility * 0.10
+        )
 
         result.components = {
-            "structure": structure,
-            "liquidity": liquidity,
-            "fundamentals": fundamentals,
-            "volatility": volatility,
-            "risk_conditions": risk_conditions,
-            "model": model_component,
+            "structure": round(structure * 35),
+            "liquidity": round(liquidity * 25),
+            "session": round(session * 15),
+            "macro": round(macro * 15),
+            "volatility": round(volatility * 10),
         }
-        result.score = min(100, sum(result.components.values()))
+        result.score = max(0, min(100, round(weighted_confidence * 100)))
 
         threshold = CONFIDENCE_MIN_SEVERE if stress == StressLevel.SEVERE else CONFIDENCE_MIN
-        result.passed = result.score >= threshold
+        result.passed = bool(risk_conditions_ok and result.score >= threshold)
         result.reason = (
             f"Live confidence {result.score} ≥ {threshold} ✓"
             if result.passed
-            else f"Live confidence {result.score} < {threshold} ✗"
+            else (
+                f"Risk conditions failed despite confidence {result.score}"
+                if not risk_conditions_ok
+                else f"Live confidence {result.score} < {threshold} ✗"
+            )
         )
         return result
+
+    # === UPGRADE STEP 8 COMPLETED ===

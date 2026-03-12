@@ -4,9 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from quantara.context.regime_engine import RegimeContext, get_current_regime
 from quantara.context.session_engine import get_session_context
 from quantara.context.volatility_regime_engine import detect_volatility_regime
+from quantara.liquidity.liquidity_heatmap_engine import InstitutionalLiquidityHeatmapEngine
 from quantara.liquidity.liquidity_memory_engine import LiquidityMemoryEngine
+from quantara.macro.macro_engine import MacroEngine
 from quantara.narrative.fundamental_narrative_engine import get_daily_narrative
 
 from .entry.fibonacci_engine import FibonacciEngine
@@ -15,7 +18,6 @@ from .entry.orderblock_engine import OrderBlockEngine
 from .liquidity_heatmap import LiquidityHeatmapEngine
 from .liquidity.liquidity_map import LiquidityMap
 from .liquidity.sweep_detector import SweepDetector
-from .macro.macro_engine import MacroEngine
 from .models.expansion_model import ExpansionModel
 from .models.liquidity_trap_model import LiquidityTrapModel
 from .models.reversal_model import ReversalModel
@@ -25,10 +27,18 @@ from .pattern.head_shoulders import HeadShoulders
 from .pattern.structure_shift import StructureShift
 from .sessions.session_engine import SessionEngine
 from .types import (AMDPhase, Direction, MacroBias, MarketAnalysis, ModelType,
-                    NarrativeEvent, NarrativePattern, SessionType, VolatilityRegime)
+                    NarrativeEvent, NarrativePattern, SessionType, VolatilityRegime, LiquidityZone)
 
 log = logging.getLogger("quantara.analysis")
 MIN_CONF = 0.55
+
+_SESSION_MODEL_MAP: dict[str, set[ModelType]] = {
+    "mean_reversion": {ModelType.REVERSAL},
+    "range_liquidity": {ModelType.REVERSAL, ModelType.LIQUIDITY_TRAP},
+    "smc": {ModelType.EXPANSION, ModelType.REVERSAL},
+    "liquidity_sweep": {ModelType.LIQUIDITY_TRAP, ModelType.REVERSAL},
+    "continuation": {ModelType.EXPANSION},
+}
 
 
 class AnalysisEngine:
@@ -73,6 +83,7 @@ class AnalysisEngine:
         self._exp_model = ExpansionModel()
         self._rev_model = ReversalModel()
         self._trap_model = LiquidityTrapModel()
+        self._institutional_heatmap = InstitutionalLiquidityHeatmapEngine()
         self._liquidity_memory = LiquidityMemoryEngine()
         self._params    = self._load_trading_parameters()
         self._model_weights = self._load_model_weights()
@@ -109,15 +120,28 @@ class AnalysisEngine:
             return result
         price=candles_m30[-1].close
         session_context = get_session_context(now)
-        session_weight = float(session_context.get("weight", 1.0))
+        session_weight = float(session_context.get("risk_multiplier", session_context.get("weight", 1.0)))
         volatility_context = detect_volatility_regime(candles_m30)
+        regime_context = get_current_regime(candles_m30)
         volatility_weight = float(volatility_context.get("weight", 1.0))
         daily_narrative = get_daily_narrative(pair)
         narrative_score = float(daily_narrative.get("score", 1.0))
 
         # 1. Macro
-        try: macro=self._macro.evaluate()
+        try:
+            macro_snapshot = self._macro.get_snapshot()
+            macro = self._macro.evaluate(macro_snapshot)
         except Exception as e: log.warning("macro_err %s",e); macro=MacroBias.NEUTRAL
+        else:
+            log.info(
+                "macro_context pair=%s dxy=%s us10y=%s pressure=%s bias=%s calendar_risk=%s",
+                pair,
+                macro_snapshot.dxy,
+                macro_snapshot.us10y,
+                macro_snapshot.pressure,
+                macro_snapshot.gold_bias.value,
+                macro_snapshot.calendar_risk,
+            )
         result.macro_bias=macro
 
         # 2. Session
@@ -176,7 +200,40 @@ class AnalysisEngine:
         )
 
         # 7. Narrative engine
-        narr=self._narrative.analyze(candles_m30, session)
+        pre_ob_buy = self._ob.find_order_blocks(candles_m30, "BUY")
+        pre_ob_sell = self._ob.find_order_blocks(candles_m30, "SELL")
+        pre_ob_payload = [
+            (float(ob.low), float(ob.high), str(ob.direction), float(ob.quality))
+            for ob in (pre_ob_buy + pre_ob_sell)
+        ]
+        fvg_buy = self._find_fvg(candles_m30, "BUY")
+        fvg_sell = self._find_fvg(candles_m30, "SELL")
+        structured_liquidity_zones = self._institutional_heatmap.build_zones(
+            candles_m30=candles_m30,
+            candles_d1=candles_d1,
+            fvg_ranges=[
+                (float(fvg_buy[0]), float(fvg_buy[1]), "BUY"),
+                (float(fvg_sell[0]), float(fvg_sell[1]), "SELL"),
+            ],
+            order_blocks=pre_ob_payload,
+        )
+
+        narr=self._narrative.analyze(
+            candles_m30,
+            session,
+            liquidity_zones=[
+                {
+                    "zone_type": zone.zone_type,
+                    "side": zone.side,
+                    "price_low": zone.price_low,
+                    "price_high": zone.price_high,
+                    "score": zone.score,
+                    "timeframe": zone.timeframe,
+                }
+                for zone in structured_liquidity_zones[:20]
+            ],
+            macro_context=(macro_snapshot.to_context() if "macro_snapshot" in locals() else None),
+        )
         result.narrative=narr
         result.narrative_pattern=self._map_narrative_pattern(narr,session)
         result.narrative_scores=[]
@@ -213,6 +270,9 @@ class AnalysisEngine:
         result.liquidity_bias=hm.bias
         result.liquidity_zones_above=hm.zones_above
         result.liquidity_zones_below=hm.zones_below
+        additional_above, additional_below = self._structured_to_liquidity_zones(structured_liquidity_zones, price)
+        result.liquidity_zones_above = self._merge_liquidity_zone_lists(result.liquidity_zones_above, additional_above)
+        result.liquidity_zones_below = self._merge_liquidity_zone_lists(result.liquidity_zones_below, additional_below)
 
         # 9. Liquidity Map
         liq_map = self._liq_pools.analyze(
@@ -396,7 +456,7 @@ class AnalysisEngine:
         liquidity_bias = self._liquidity_map_confidence_bias(liq_map, raid.raid_direction, price, max(atr, 0.1))
         magnet_bonus = magnet_result.primary_magnet.magnet_strength * 0.2 if magnet_result.primary_magnet is not None else 0.0
         adjusted_liquidity_strength = max(0.0, min(1.0, base_liquidity_strength + liquidity_bias + magnet_bonus))
-        session_weight = float(session_context.get("weight", 1.0))
+        session_weight = float(session_context.get("risk_multiplier", session_context.get("weight", 1.0)))
         volatility_alignment = float(volatility_context.get("weight", 1.0))
         macro_alignment = self._macro_alignment(macro_narrative, narr)
         trap_risk_01 = min(1.0, trap_analysis.trap_probability / 100.0)
@@ -411,6 +471,7 @@ class AnalysisEngine:
         exp, rev, trap = self._adjust_models_with_displacement(exp, rev, trap, displacement_result)
         exp, rev, trap = self._adjust_models_with_magnet(exp, rev, trap, magnet_result)
         exp, rev, trap = self._apply_meta_model_weights(exp, rev, trap)
+        exp, rev, trap = self._apply_regime_model_weights(exp, rev, trap, regime_context)
         liquidity_memory_score = float(liquidity_memory.get("score", 0.5))
         liquidity_memory_side = str(liquidity_memory.get("side", "NONE"))
 
@@ -443,6 +504,8 @@ class AnalysisEngine:
             current_price=price,
             atr=max(atr, 0.1),
             pair=pair,
+            allowed_models=session_context.get("allowed_models"),
+            session_multiplier=float(session_context.get("risk_multiplier", 1.0)),
         )
         result.recommended_model=best.model_type
         result.model_result=best
@@ -508,9 +571,10 @@ class AnalysisEngine:
         best=result.model_result if result.model_result is not None else best
         result.briefing=self._briefing(result,exp,rev,trap,best,atr,narr,hm,buy,sell,price)
         log.info(
-            "Session: %s | Volatility: %s | Narrative: %s | Liquidity Target: %s | Confidence: %.2f",
+            "Session: %s | Volatility: %s | Regime: %s | Narrative: %s | Liquidity Target: %s | Confidence: %.2f",
             session_context.get("session", session.value),
             volatility_context.get("regime", volx.regime.value),
+            regime_context.regime,
             str(daily_narrative.get("bias", narr.bias)).upper(),
             liquidity_memory.get("target", "NONE"),
             result.confidence_result.score / 100.0,
@@ -519,6 +583,48 @@ class AnalysisEngine:
              pair,session.value,volx.regime.value,exp.confidence,rev.confidence,trap.confidence,
                  best.model_type.value,result.has_trade_setup)
         return result
+
+    def _structured_to_liquidity_zones(self, structured_zones, current_price: float) -> tuple[list[LiquidityZone], list[LiquidityZone]]:
+        above: list[LiquidityZone] = []
+        below: list[LiquidityZone] = []
+        for zone in structured_zones:
+            midpoint = zone.midpoint
+            direction = "ABOVE" if midpoint > current_price else "BELOW"
+            liq_zone = LiquidityZone(
+                price=round(midpoint, 2),
+                score=int(zone.score),
+                zone_type=str(zone.zone_type),
+                distance=round(abs(midpoint - current_price), 2),
+                direction=direction,
+                strength="HIGH" if zone.score >= 7 else ("MEDIUM" if zone.score >= 5 else "LOW"),
+            )
+            if direction == "ABOVE":
+                above.append(liq_zone)
+            else:
+                below.append(liq_zone)
+        return above, below
+
+    def _merge_liquidity_zone_lists(self, base_zones: list[LiquidityZone], additional: list[LiquidityZone]) -> list[LiquidityZone]:
+        merged: dict[tuple[float, str], LiquidityZone] = {}
+        for zone in (base_zones + additional):
+            key = (round(float(zone.price), 2), str(zone.zone_type))
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = zone
+                continue
+            merged[key] = LiquidityZone(
+                price=existing.price,
+                score=max(existing.score, zone.score),
+                zone_type=existing.zone_type,
+                distance=min(existing.distance, zone.distance),
+                direction=existing.direction,
+                strength="HIGH" if max(existing.score, zone.score) >= 7 else ("MEDIUM" if max(existing.score, zone.score) >= 5 else "LOW"),
+            )
+        return sorted(merged.values(), key=lambda z: z.distance)[:16]
+
+    # === UPGRADE STEP 4 COMPLETED ===
+
+    # === UPGRADE STEP 5 COMPLETED ===
 
     def adjust_for_liquidity(self, exp, rev, trap, regime_result):
         if regime_result is None:
@@ -728,6 +834,27 @@ class AnalysisEngine:
         trap.confidence = _adjust(max(0.0, trap.confidence), self._model_weights.get("LIQUIDITY_TRAP", 1.0))
         return exp, rev, trap
 
+    def _apply_regime_model_weights(self, exp, rev, trap, regime_context: RegimeContext):
+        regime_weights: dict[str, dict[str, float]] = {
+            "expansion": {"EXPANSION": 1.15, "REVERSAL": 0.95, "LIQUIDITY_TRAP": 1.05},
+            "trend": {"EXPANSION": 1.10, "REVERSAL": 0.90, "LIQUIDITY_TRAP": 0.95},
+            "range": {"EXPANSION": 0.90, "REVERSAL": 1.10, "LIQUIDITY_TRAP": 1.10},
+            "compression": {"EXPANSION": 0.75, "REVERSAL": 1.05, "LIQUIDITY_TRAP": 1.00},
+        }
+
+        selected = regime_weights.get(regime_context.regime, regime_weights["range"])
+
+        def _adjust(conf: float, weight: float) -> float:
+            adjusted = conf * (1.0 + (weight - 1.0) * 0.25)
+            return round(max(0.0, min(1.0, adjusted)), 3)
+
+        exp.confidence = _adjust(exp.confidence, selected["EXPANSION"])
+        rev.confidence = _adjust(rev.confidence, selected["REVERSAL"])
+        trap.confidence = _adjust(trap.confidence, selected["LIQUIDITY_TRAP"])
+        return exp, rev, trap
+
+    # === UPGRADE STEP 3 COMPLETED ===
+
     def _confidence_from_selected_model(self, best, threshold: float):
         from .types import ConfidenceResult
 
@@ -757,10 +884,18 @@ class AnalysisEngine:
         current_price: float,
         atr: float,
         pair: str,
+        allowed_models: object = None,
+        session_multiplier: float = 1.0,
     ):
         from .types import Direction, ModelResult, ModelType
 
         candidates = [exp, rev, trap]
+
+        allowed_model_types: set[ModelType] = self._resolve_allowed_model_types(allowed_models)
+        if allowed_model_types:
+            filtered_candidates = [model for model in candidates if model.model_type in allowed_model_types]
+            if filtered_candidates:
+                candidates = filtered_candidates
         for model in candidates:
             score = self._model_competitive_confidence(
                 model_result=model,
@@ -774,6 +909,7 @@ class AnalysisEngine:
                 liq_map=liq_map,
                 current_price=current_price,
                 atr=atr,
+                session_multiplier=session_multiplier,
             )
             model.confidence = round(score / 100.0, 3)
 
@@ -826,6 +962,16 @@ class AnalysisEngine:
                 )
         return ranked[0]
 
+    def _resolve_allowed_model_types(self, allowed_models: object) -> set[ModelType]:
+        if not isinstance(allowed_models, list):
+            return set()
+        resolved: set[ModelType] = set()
+        for model_name in allowed_models:
+            key = str(model_name).strip().lower()
+            resolved.update(_SESSION_MODEL_MAP.get(key, set()))
+        return resolved
+
+
     def _model_competitive_confidence(
         self,
         model_result,
@@ -839,6 +985,7 @@ class AnalysisEngine:
         liq_map,
         current_price: float,
         atr: float,
+        session_multiplier: float,
     ) -> float:
         if model_result is None or model_result.setup is None:
             return 0.0
@@ -856,18 +1003,29 @@ class AnalysisEngine:
         trap_risk = self._trap_risk_for_model(trap_analysis, model_type)
         inefficiency_magnet = self._inefficiency_alignment_for_direction(ineff, current_price, setup_direction)
 
-        confidence = self._trade_conf.evaluate(
-            amd_alignment=amd_alignment,
-            narrative_alignment=narrative_alignment,
-            liquidity_strength=liquidity_strength,
-            raid_prediction=raid_probability,
-            volatility_expansion=volatility_expansion,
-            fundamental_bias=fundamental_bias,
-            trap_risk=trap_risk,
-            inefficiency_magnet=inefficiency_magnet,
+        structure_component = max(0.0, min(1.0, (amd_alignment + narrative_alignment) / 2.0))
+        liquidity_component = max(0.0, min(1.0, (liquidity_strength + raid_probability) / 2.0))
+        session_component = max(0.0, min(1.0, session_multiplier))
+        macro_component = max(0.0, min(1.0, fundamental_bias))
+        volatility_component = max(0.0, min(1.0, volatility_expansion))
+
+        weighted_confidence = (
+            structure_component * 0.35
+            + liquidity_component * 0.25
+            + session_component * 0.15
+            + macro_component * 0.15
+            + volatility_component * 0.10
         )
+
+        trap_penalty = max(0.75, 1.0 - (trap_risk * 0.15))
+        ineff_boost = 1.0 + ((inefficiency_magnet - 0.5) * 0.08)
+        adjusted_weighted = max(0.0, min(1.0, weighted_confidence * trap_penalty * ineff_boost))
+
         base_conf = max(0.0, min(100.0, model_result.confidence * 100.0))
-        return round((confidence.score * 0.70) + (base_conf * 0.30), 2)
+        weighted_pct = adjusted_weighted * 100.0
+        return round((weighted_pct * 0.80) + (base_conf * 0.20), 2)
+
+    # === UPGRADE STEP 8 COMPLETED ===
 
     def _amd_alignment_for_model(self, phase: AMDPhase, model_type: ModelType) -> float:
         if model_type == ModelType.REVERSAL:

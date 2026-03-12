@@ -27,7 +27,13 @@ class NarrativeEngineV2:
     def __init__(self, thresholds: _Thresholds | None = None) -> None:
         self.t = thresholds or _Thresholds()
 
-    def analyze(self, candles_m30, session: SessionType) -> NarrativeAnalysis:
+    def analyze(
+        self,
+        candles_m30,
+        session: SessionType,
+        liquidity_zones: list[dict[str, object]] | None = None,
+        macro_context: dict[str, object] | None = None,
+    ) -> NarrativeAnalysis:
         if not candles_m30 or len(candles_m30) < 50:
             return NarrativeAnalysis(
                 events=[NarrativeEvent.NONE],
@@ -63,7 +69,16 @@ class NarrativeEngineV2:
             events = [NarrativeEvent.NONE]
 
         strength = self._strength(events)
+        current_price = float(candles_m30[-1].close)
+        liquidity_bias = self._liquidity_zone_bias(liquidity_zones, current_price)
+        macro_bias = self._macro_context_bias(macro_context)
         bias = self._bias(sweep_dir, disp_dir, bos_dir, continuation, trap_dir)
+        if bias == "NEUTRAL" and liquidity_bias in ("BULLISH", "BEARISH"):
+            bias = liquidity_bias
+            strength = min(1.0, strength + 0.08)
+        if bias == "NEUTRAL" and macro_bias in ("BULLISH", "BEARISH"):
+            bias = macro_bias
+            strength = min(1.0, strength + 0.06)
 
         return NarrativeAnalysis(
             events=events,
@@ -74,6 +89,44 @@ class NarrativeEngineV2:
             bos_detected=bos,
             inducement_detected=inducement,
         )
+
+    def _liquidity_zone_bias(self, liquidity_zones: list[dict[str, object]] | None, current_price: float) -> str:
+        if not liquidity_zones:
+            return "NEUTRAL"
+
+        above_score = 0.0
+        below_score = 0.0
+        for raw_zone in liquidity_zones:
+            price_low = float(raw_zone.get("price_low", 0.0))
+            price_high = float(raw_zone.get("price_high", 0.0))
+            midpoint = (price_low + price_high) / 2.0
+            score = float(raw_zone.get("score", 0.0))
+            if midpoint > current_price:
+                above_score += score
+            elif midpoint < current_price:
+                below_score += score
+
+        if above_score > below_score * 1.15:
+            return "BULLISH"
+        if below_score > above_score * 1.15:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    def _macro_context_bias(self, macro_context: dict[str, object] | None) -> str:
+        if not macro_context:
+            return "NEUTRAL"
+        raw_bias = str(macro_context.get("gold_bias", "NEUTRAL")).upper()
+        pressure = float(macro_context.get("pressure", 0.0))
+        if raw_bias == "BULLISH_GOLD" or pressure >= 0.2:
+            return "BULLISH"
+        if raw_bias == "BEARISH_GOLD" or pressure <= -0.2:
+            return "BEARISH"
+        return "NEUTRAL"
+
+
+# === UPGRADE STEP 4 COMPLETED ===
+
+# === UPGRADE STEP 5 COMPLETED ===
 
     def detect_liquidity_sweep(self, candles) -> tuple[bool, str]:
         if len(candles) < self.t.sweep_lookback + 2:

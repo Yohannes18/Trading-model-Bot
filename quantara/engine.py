@@ -6,7 +6,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .context.regime_engine import get_current_regime
+from .context.session_engine import get_session_context
 from .config import (
+    CONFIDENCE_MIN,
+    CONFIDENCE_MIN_SEVERE,
     EVENT_LOOP_LAG_WARN_SECONDS,
     HEARTBEAT_INTERVAL_SECONDS,
     KILL_ZONES_UTC,
@@ -16,6 +20,7 @@ from .config import (
     SESSION_FILTER,
     SETUP_TTL_SECONDS,
     SIGNAL_COOLDOWN,
+    StressLevel,
     TIMEFRAMES,
     ModelStatus,
     TradeState,
@@ -23,11 +28,14 @@ from .config import (
     log_structured,
 )
 from .database.db_manager import DatabaseManager
+from .diagnostics.trade_explainer import TradeExplainer
 from .event_bus import EventBus
 from .execution.mt5_executor import MT5Executor
 from .execution.position_monitor import PositionMonitor
 from .governance.governance_engine import GovernanceEngine
+from .liquidity.sweep_detector import PdhPdlSweepDetector
 from .risk.position_sizer import PositionSizer
+from .risk.risk_engine import DynamicRiskEngine
 from .risk.risk_validator import RiskValidator
 from .state_machine import Trade, TradeSetup, transition_trade_state
 from .strategy.analysis_engine import AnalysisEngine
@@ -63,6 +71,7 @@ class QuantaraEngine:
         self._confidence = confidence
         self._fundamentals = fundamentals
         self._risk_sizer = risk_sizer
+        self._dynamic_risk = DynamicRiskEngine()
         self._risk_validator = risk_validator
         self._stress = stress
         self._governance = governance
@@ -70,6 +79,8 @@ class QuantaraEngine:
         self._command_listener = command_listener
         self._monitor = monitor
         self._bot = bot
+        self._explainer = TradeExplainer()
+        self._pdh_pdl_sweep = PdhPdlSweepDetector()
 
         self._running = False
         self._cooldown: dict[str, datetime] = {}
@@ -90,19 +101,12 @@ class QuantaraEngine:
         await self._scan_cycle()
 
     async def scan_loop(self) -> None:
-        was_sleeping = False
+        last_session: str | None = None
         while self._running:
-            wait = seconds_until_next_session()
-            if wait > 0:
-                if not was_sleeping:
-                    self._bus.publish("session.sleep", {"wait_seconds": wait})
-                    was_sleeping = True
-                await asyncio.sleep(min(wait, 60))
-                continue
-
-            if was_sleeping:
-                self._bus.publish("session.open", {"session": session_name()})
-                was_sleeping = False
+            current_session = session_name()
+            if current_session != last_session:
+                self._bus.publish("session.open", {"session": current_session})
+                last_session = current_session
 
             await self._scan_cycle()
             await asyncio.sleep(SCAN_INTERVAL)
@@ -184,6 +188,9 @@ class QuantaraEngine:
         governance_state,
         equity: float,
     ) -> None:
+        # Required runtime flow:
+        # MT5 (real) → Session → Regime → Liquidity Heatmap → Macro → Narrative
+        # → Model Competition → Confidence → Risk Gate → Execution + Explainer
         allowed, reason = await self._risk_validator.validate_new_trade()
         if not allowed and governance_state.status != ModelStatus.SHADOW:
             log.info("daily_hard_stop blocked=%s", reason)
@@ -194,12 +201,52 @@ class QuantaraEngine:
         candles_h1  = self._execution.get_candles(pair, "H1",  100)
         candles_h4  = self._execution.get_candles(pair, "H4",   60)
         candles_d1  = self._execution.get_candles(pair, "D1",   30)
+        log_structured("pipeline_stage", pair=pair, timeframe=timeframe, stage="MT5_REAL")
+
+        session_context = get_session_context(now_utc())
+        regime_context = get_current_regime(candles_m30)
+        log_structured(
+            "pipeline_stage",
+            pair=pair,
+            timeframe=timeframe,
+            stage="SESSION_REGIME",
+            session_context=session_context,
+            regime=regime_context.regime,
+        )
 
         if len(candles_m30) < 50:
             return
 
         # Run full institutional analysis pipeline with explicit timeframe context
         analysis = self._strategy.analyze(candles_m30, candles_h1, candles_h4, candles_d1, pair, timeframe=timeframe)
+        log_structured(
+            "pipeline_stage",
+            pair=pair,
+            timeframe=timeframe,
+            stage="LIQUIDITY_MACRO_NARRATIVE_MODEL",
+            model=analysis.recommended_model.value,
+            macro_bias=analysis.macro_bias.value,
+            narrative_bias=analysis.narrative.bias,
+        )
+        pdh_pdl_sweep = self._pdh_pdl_sweep.detect(candles_m30, candles_d1)
+
+        log_structured(
+            "model_scores",
+            pair=pair,
+            timeframe=timeframe,
+            expansion=round(float(getattr(analysis, "expansion_confidence", 0.0)) * 100.0, 2),
+            reversal=round(float(getattr(analysis, "reversal_confidence", 0.0)) * 100.0, 2),
+            liquidity_trap=round(float(getattr(analysis, "trap_confidence", 0.0)) * 100.0, 2),
+            selected_model=analysis.recommended_model.value,
+            session_context=session_context,
+        )
+        log_structured(
+            "macro_bias",
+            pair=pair,
+            timeframe=timeframe,
+            macro_bias=analysis.macro_bias.value,
+            session_context=session_context,
+        )
 
         # Send briefing to Telegram every cycle (even without setup)
         if analysis.briefing:
@@ -211,6 +258,17 @@ class QuantaraEngine:
 
         # No trade setup — analysis only
         if not analysis.has_trade_setup or analysis.model_result is None or analysis.model_result.setup is None:
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=(analysis.model_result.blocked_reason if analysis.model_result else "no_trade_setup"),
+                threshold=float(analysis.confidence_result.score),
+                confidence_score=float(analysis.confidence_result.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         model_result = analysis.model_result
@@ -221,6 +279,7 @@ class QuantaraEngine:
         sl    = setup_proposal.stop_loss
         tp    = setup_proposal.take_profit
         rr    = setup_proposal.rr
+        session_multiplier = float(session_context.get("risk_multiplier", 1.0))
 
         fund_score = context.fund_score(pair, setup_proposal.direction.value)
         confidence_eval = self._confidence.score_live(
@@ -231,17 +290,97 @@ class QuantaraEngine:
             stress_state.level,
             analysis.volatility_regime.value,
             allowed,
+            session_multiplier=session_multiplier,
         )
+        log_structured(
+            "pipeline_stage",
+            pair=pair,
+            timeframe=timeframe,
+            stage="CONFIDENCE",
+            confidence_score=confidence_eval.score,
+            confidence_passed=confidence_eval.passed,
+        )
+
+        confidence_threshold = float(CONFIDENCE_MIN_SEVERE if stress_state.level == StressLevel.SEVERE else CONFIDENCE_MIN)
         if not confidence_eval.passed:
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=f"confidence_gate:{confidence_eval.reason}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             log.info("confidence_reject pair=%s tf=%s score=%s reason=%s", pair, timeframe, confidence_eval.score, confidence_eval.reason)
             return
 
         if rr < MIN_RR:
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=f"rr_gate:{rr:.2f}<{MIN_RR:.2f}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         is_shadow = governance_state.status == ModelStatus.SHADOW
         size = self._risk_sizer.calculate(pair, entry, sl, equity, stress_state)
+        risk_adjustment = self._dynamic_risk.evaluate(
+            session_multiplier=session_multiplier,
+            regime_name=regime_context.regime,
+            volatility_regime=analysis.volatility_regime.value,
+            imminent_events=context.imminent_events,
+        )
+        log_structured(
+            "pipeline_stage",
+            pair=pair,
+            timeframe=timeframe,
+            stage="RISK_GATE",
+            risk_allowed=risk_adjustment.allowed,
+            risk_multiplier=risk_adjustment.multiplier,
+            risk_reason=risk_adjustment.reason,
+        )
+
+        if not risk_adjustment.allowed and not is_shadow:
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=f"risk_gate:{risk_adjustment.reason}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
+            return
+
+        session_risk_multiplier = float(risk_adjustment.multiplier)
+
+        if size.allowed:
+            size.lot_size = round(max(0.01, min(10.0, size.lot_size * session_risk_multiplier)), 2)
+            size.adjusted_risk_percent = round(max(0.0, size.adjusted_risk_percent * session_risk_multiplier), 3)
+
         if not size.allowed and not is_shadow:
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=f"risk_gate:{size.reason}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         exposure_used = self._db.get_today_risk()
@@ -277,6 +416,9 @@ class QuantaraEngine:
                     analysis.liquidity_magnet.primary_magnet.magnet_strength if analysis.liquidity_magnet and analysis.liquidity_magnet.primary_magnet else 0.0,
                     4,
                 ),
+                "pdh_pdl_sweep_detected": pdh_pdl_sweep.detected,
+                "pdh_pdl_sweep_side": pdh_pdl_sweep.side,
+                "pdh_pdl_sweep_level": round(pdh_pdl_sweep.swept_level, 2),
             },
             expires_at=now_utc() + timedelta(seconds=SETUP_TTL_SECONDS),
         )
@@ -301,7 +443,20 @@ class QuantaraEngine:
             confidence=setup.confidence,
             rr=rr,
             risk_percent=trade.risk_pct,
+            session_context=session_context,
+            risk_context=risk_adjustment.components,
             exposure_used=round(exposure_used, 3),
+        )
+        self._emit_explanation(
+            pair=pair,
+            timeframe=timeframe,
+            analysis=analysis,
+            decision="TRADE_CANDIDATE",
+            decision_reason="setup_found",
+            threshold=confidence_threshold,
+            confidence_score=float(confidence_eval.score),
+            session_context=session_context,
+            regime_name=regime_context.regime,
         )
 
         # Send rich confirmation to Telegram (includes full briefing)
@@ -331,12 +486,34 @@ class QuantaraEngine:
             self._db.log_event(trade.id, "TIMEOUT", TradeState.AWAITING_CONFIRM.value, TradeState.CANCELLED.value)
             self._command_listener.unregister(trade.id)
             self._bot.send(f"⏰ *Trade `{trade.id[:8]}` expired* — no response in time.")
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason="manual_confirmation_timeout",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         if not decision_holder[0]:
             transition_trade_state(trade, TradeState.REJECTED, "manual_reject")
             self._db.log_trade(trade.to_record())
             self._db.log_event(trade.id, "REJECTED", TradeState.AWAITING_CONFIRM.value, TradeState.REJECTED.value)
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason="manual_reject",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         transition_trade_state(trade, TradeState.EXECUTING, "manual_confirm")
@@ -348,6 +525,17 @@ class QuantaraEngine:
             self._db.log_trade(trade.to_record())
             self._monitor.register(trade)
             self._bus.publish("execution.shadow", {"trade_id": trade.id})
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="TRADE_SHADOW",
+                decision_reason="shadow_mode_execution",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
 
         precheck = self._execution.validate_market(trade.setup.pair, trade.setup.direction)
@@ -359,7 +547,27 @@ class QuantaraEngine:
                 {"reason": precheck.reason, "spread": precheck.spread_points, "slippage": precheck.slippage_points},
             )
             self._bot.send(f"❌ *Execution blocked* `{trade.id[:8]}` — {precheck.reason}")
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason=f"execution_precheck:{precheck.reason}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
             return
+
+        log_structured(
+            "pipeline_stage",
+            pair=pair,
+            timeframe=timeframe,
+            stage="EXECUTION",
+            direction=trade.setup.direction,
+            lot=trade.lot,
+        )
 
         ticket = self._execution.place_order(
             trade.setup.pair, trade.setup.direction, trade.lot,
@@ -375,19 +583,87 @@ class QuantaraEngine:
             log_structured(
                 "execution_ok", trade_id=trade.id, model=analysis.recommended_model.value,
                 confidence=setup.confidence, rr=rr, risk_percent=trade.risk_pct,
+                session_context=session_context,
+                risk_context=risk_adjustment.components,
                 exposure_used=round(self._db.get_today_risk(), 3),
+            )
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="TRADE_EXECUTED",
+                decision_reason=f"ticket:{ticket}",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
             )
         else:
             transition_trade_state(trade, TradeState.CANCELLED, "order_failed")
             self._db.log_trade(trade.to_record())
             self._db.log_event(trade.id, "EXEC_FAILED", TradeState.EXECUTING.value, TradeState.CANCELLED.value)
             self._bot.send(f"❌ *Execution failed* for `{trade.id[:8]}`")
+            self._emit_explanation(
+                pair=pair,
+                timeframe=timeframe,
+                analysis=analysis,
+                decision="BLOCKED",
+                decision_reason="execution_order_failed",
+                threshold=confidence_threshold,
+                confidence_score=float(confidence_eval.score),
+                session_context=session_context,
+                regime_name=regime_context.regime,
+            )
 
     def _write_signal(self, trade: Trade, analysis) -> None:
         try:
             _upsert_signal_file(_signal_record(trade, analysis))
         except Exception as exc:
             log.warning("signal_write_error trade_id=%s error=%s", trade.id, exc)
+
+    def _emit_explanation(
+        self,
+        *,
+        pair: str,
+        timeframe: str,
+        analysis,
+        decision: str,
+        decision_reason: str,
+        threshold: float,
+        confidence_score: float,
+        session_context: dict[str, object],
+        regime_name: str,
+    ) -> None:
+        explanation = self._explainer.build(
+            analysis=analysis,
+            decision=decision,
+            decision_reason=decision_reason,
+            threshold=threshold,
+            confidence_score=confidence_score,
+            session_name=str(session_context.get("session", "UNKNOWN")),
+            regime_name=regime_name,
+        )
+        payload = explanation.to_payload()
+        payload.update({"pair": pair, "timeframe": timeframe})
+        log_structured("trade_explainer", **payload)
+        log_structured(
+            "trade_decision",
+            pair=pair,
+            timeframe=timeframe,
+            trade_decision=decision,
+            decision_reason=decision_reason,
+            macro_bias=analysis.macro_bias.value,
+            session_context=session_context,
+            model_scores=payload.get("model_scores"),
+        )
+
+    # === UPGRADE STEP 7 COMPLETED ===
+
+    # === UPGRADE STEP 8 COMPLETED ===
+
+    # === UPGRADE STEP 9 COMPLETED ===
+
+    # === UPGRADE STEP 10 COMPLETED ===
 
 
 def now_utc() -> datetime:
