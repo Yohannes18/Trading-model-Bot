@@ -80,6 +80,44 @@ def _build_pre_london_market_brief(execution: MT5Executor, pair: str = "XAUUSD")
     )
 
 
+def _build_intraday_macro_delta(previous: Any, current: Any) -> str | None:
+    if previous is None or current is None:
+        return None
+
+    changes: list[str] = []
+
+    if previous.gold_bias != current.gold_bias:
+        changes.append(f"Bias: `{previous.gold_bias.value}` → `{current.gold_bias.value}`")
+
+    if abs(float(previous.pressure) - float(current.pressure)) >= 0.08:
+        changes.append(f"Pressure: `{previous.pressure:+.2f}` → `{current.pressure:+.2f}`")
+
+    if previous.dxy is None and current.dxy is not None:
+        changes.append(f"DXY: `N/A` → `{current.dxy:.2f}`")
+    elif previous.dxy is not None and current.dxy is None:
+        changes.append(f"DXY: `{previous.dxy:.2f}` → `N/A`")
+    elif previous.dxy is not None and current.dxy is not None and abs(float(previous.dxy) - float(current.dxy)) >= 0.05:
+        changes.append(f"DXY: `{previous.dxy:.2f}` → `{current.dxy:.2f}`")
+
+    if previous.us10y is None and current.us10y is not None:
+        changes.append(f"US10Y: `N/A` → `{current.us10y:.3f}%`")
+    elif previous.us10y is not None and current.us10y is None:
+        changes.append(f"US10Y: `{previous.us10y:.3f}%` → `N/A`")
+    elif previous.us10y is not None and current.us10y is not None and abs(float(previous.us10y) - float(current.us10y)) >= 0.005:
+        changes.append(f"US10Y: `{previous.us10y:.3f}%` → `{current.us10y:.3f}%`")
+
+    if previous.calendar_risk != current.calendar_risk or previous.high_impact_events != current.high_impact_events:
+        changes.append(
+            f"Calendar Risk: `{'HIGH' if previous.calendar_risk else 'LOW'}` ({previous.high_impact_events}) → `{'HIGH' if current.calendar_risk else 'LOW'}` ({current.high_impact_events})"
+        )
+
+    if not changes:
+        return None
+
+    ts = current.fetched_at.strftime("%H:%M UTC")
+    return "📡 *Macro Change Alert*\n" + f"Time: `{ts}`\n\n" + "\n".join(f"- {line}" for line in changes)
+
+
 def _start_daily_macro_scheduler(bot: TelegramBot, execution: MT5Executor) -> None:
     global _SCHEDULER
     if BackgroundScheduler is None:
@@ -88,18 +126,40 @@ def _start_daily_macro_scheduler(bot: TelegramBot, execution: MT5Executor) -> No
     if _SCHEDULER is not None:
         return
 
+    macro_engine = MacroEngine()
+    last_sent_snapshot: Any | None = None
+
     def send_daily_macro_report() -> None:
+        nonlocal last_sent_snapshot
         try:
             msg = _build_pre_london_market_brief(execution, pair="XAUUSD")
             bot.send(msg)
+            last_sent_snapshot = macro_engine.get_snapshot(cache_ttl_seconds=30)
             log.info("pre_london_market_brief_sent pair=%s", "XAUUSD")
         except Exception as exc:
             log.error("pre_london_market_brief_failed error=%s", exc)
 
+    def send_intraday_macro_changes() -> None:
+        nonlocal last_sent_snapshot
+        try:
+            current = macro_engine.get_snapshot(cache_ttl_seconds=30)
+            if last_sent_snapshot is None:
+                last_sent_snapshot = current
+                return
+
+            delta_msg = _build_intraday_macro_delta(last_sent_snapshot, current)
+            if delta_msg:
+                bot.send(delta_msg)
+                log.info("intraday_macro_delta_sent")
+            last_sent_snapshot = current
+        except Exception as exc:
+            log.error("intraday_macro_delta_failed error=%s", exc)
+
     _SCHEDULER = BackgroundScheduler(timezone="UTC")
     _SCHEDULER.add_job(send_daily_macro_report, "cron", hour=6, minute=0)
+    _SCHEDULER.add_job(send_intraday_macro_changes, "cron", hour="*/4", minute=5)
     _SCHEDULER.start()
-    log.info("pre_london_brief_scheduler_started utc=06:00")
+    log.info("macro_scheduler_started daily_utc=06:00 intraday_every_hours=4")
 
 
 def _stop_daily_macro_scheduler() -> None:

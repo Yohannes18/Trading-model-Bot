@@ -20,6 +20,7 @@ from ..config import (
     log,
 )
 from engine.meta_learning_engine import MetaLearningEngine
+from ..macro.macro_engine import MacroEngine
 from ..state_machine import GovernanceState, StressState, Trade, TradeSetup
 
 
@@ -264,6 +265,7 @@ class CommandListener:
         self._stress_engine: Any = None
         self._governance_engine: Any = None
         self._mt5: Any = None
+        self._macro = MacroEngine()
 
     def bind_state(self, db: Any, stress: Any, governance: Any, mt5: Any) -> None:
         self._db = db
@@ -328,8 +330,20 @@ class CommandListener:
             elif text in ("/trades", "/t"):
                 self._cmd_trades()
 
+            elif text in ("/macro", "/m"):
+                self._cmd_macro()
+
+            elif text in ("/risk", "/r"):
+                self._cmd_risk()
+
+            elif text in ("/next", "/n"):
+                self._cmd_next()
+
             elif text in ("/help", "/h", "/start"):
                 self._cmd_help()
+
+            elif text.startswith("/"):
+                self._bot.send("❓ Command not recognized. Try `/help` for available commands.")
 
     def _cmd_status(self) -> None:
         if not self._db or not self._stress_engine or not self._mt5:
@@ -415,10 +429,93 @@ class CommandListener:
         except Exception as exc:
             self._bot.send(f"⚠️ Trades error: {exc}")
 
+    def _cmd_macro(self) -> None:
+        try:
+            snap = self._macro.get_snapshot(cache_ttl_seconds=60)
+            dxy_line = "N/A"
+            if snap.dxy is not None:
+                dxy_delta = "N/A" if snap.dxy_change_pct is None else f"{snap.dxy_change_pct:+.2f}%"
+                dxy_line = f"{snap.dxy:.2f} ({dxy_delta})"
+
+            us10y_line = "N/A"
+            if snap.us10y is not None:
+                us10y_delta = "N/A" if snap.us10y_change_bps is None else f"{snap.us10y_change_bps:+.1f} bps"
+                us10y_line = f"{snap.us10y:.3f}% ({us10y_delta})"
+
+            if snap.gold_bias.value == "BULLISH_GOLD":
+                action_hint = "Macro tailwind supports long-gold setups if structure confirms."
+            elif snap.gold_bias.value == "BEARISH_GOLD":
+                action_hint = "Macro headwind for gold; favor short-gold setups unless price action strongly disagrees."
+            else:
+                action_hint = "Macro is mixed/flat; rely more on structure, liquidity and confidence filters."
+
+            self._bot.send(
+                "🌍 *Macro Report*\n\n"
+                f"DXY: `{dxy_line}`\n"
+                f"US10Y: `{us10y_line}`\n"
+                f"Calendar Risk: `{'HIGH' if snap.calendar_risk else 'LOW'}` (USD high-impact events: `{snap.high_impact_events}`)\n"
+                f"Gold Bias: `{snap.gold_bias.value}`\n"
+                f"Pressure Score: `{snap.pressure:+.2f}`\n\n"
+                "*What the bot saw*\n"
+                f"- Dollar/yield regime translated to `{snap.gold_bias.value}` for XAU.\n"
+                f"- Event risk filter is `{'ON' if snap.calendar_risk else 'OFF'}` right now.\n\n"
+                "*Suggested action*\n"
+                f"{action_hint}\n\n"
+                "Try `/status`, `/risk`, `/trades`, `/next`"
+            )
+        except Exception as exc:
+            self._bot.send(f"⚠️ Macro error: {exc}")
+
+    def _cmd_risk(self) -> None:
+        if not self._db:
+            self._bot.send("⚠️ Risk summary not available yet — engine still starting.")
+            return
+        try:
+            used = float(self._db.get_today_risk())
+            remaining = max(0.0, float(DAILY_RISK_CAP) - used)
+            open_trades = int(self._db.get_open_trade_count())
+            self._bot.send(
+                "🛡️ *Risk Snapshot*\n\n"
+                f"Risk Used Today: `{used:.1f}% / {DAILY_RISK_CAP}%`\n"
+                f"Risk Remaining: `{remaining:.1f}%`\n"
+                f"Open Trades: `{open_trades} / {MAX_OPEN_TRADES}`\n"
+                f"Base Risk/Trade: `{RISK_PERCENT:.1f}%`"
+            )
+        except Exception as exc:
+            self._bot.send(f"⚠️ Risk error: {exc}")
+
+    def _cmd_next(self) -> None:
+        if not self._db or not self._stress_engine or not self._governance_engine or not self._mt5:
+            self._bot.send("⚠️ Guidance not available yet — engine still starting.")
+            return
+        try:
+            equity = self._mt5.get_equity()
+            stress = self._stress_engine.evaluate(equity)
+            gov = self._governance_engine.evaluate(stress)
+            if gov.status.value == "DISABLED":
+                guidance = "Model is disabled. Wait for conditions to recover before confirming setups."
+            elif stress.level.value in ("SEVERE", "MODERATE"):
+                guidance = "Stress is elevated. Prefer quality-over-frequency and be selective with confirmations."
+            else:
+                guidance = "System is tradable. Follow setup confirmations and keep risk discipline."
+
+            self._bot.send(
+                "🧭 *Next Best Action*\n\n"
+                f"Model State: `{gov.status.value}`\n"
+                f"Stress State: `{stress.level.value}`\n"
+                f"Recommendation: {guidance}\n\n"
+                "Useful now: `/macro` `/status` `/risk` `/trades`"
+            )
+        except Exception as exc:
+            self._bot.send(f"⚠️ Guidance error: {exc}")
+
     def _cmd_help(self) -> None:
         self._bot.send(
             "🤖 *Quantara Commands*\n\n"
             "/status — engine health, stress, risk\n"
+            "/macro — macro regime report + action hint\n"
+            "/risk — risk usage and remaining budget\n"
+            "/next — what to do now (model-aware)\n"
             "/trades — last 5 trades\n\n"
             "When a setup is found:\n"
             "`/confirm_XXXXXXXX` — execute the trade\n"

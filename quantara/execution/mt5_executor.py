@@ -61,9 +61,78 @@ class MT5Executor:
             self._mt5: Any = importlib.import_module("MetaTrader5")
         except ImportError:
             self._mt5 = None
+        self._symbol_map: dict[str, str] = {}
+        self._available_symbols: list[str] = []
         # Small, bounded retry budget for order placement so that we
         # can survive transient MT5 glitches without stalling the engine.
         self._max_order_retries = 3
+
+    def _refresh_available_symbols(self) -> list[str]:
+        if self._sim or not self._mt5:
+            return []
+        try:
+            symbols = self._mt5.symbols_get() or []
+            names = [str(getattr(s, "name", "") or "") for s in symbols]
+            self._available_symbols = [name for name in names if name]
+        except Exception:
+            self._available_symbols = []
+        return self._available_symbols
+
+    def _candidate_symbols(self, canonical: str) -> list[str]:
+        if not self._available_symbols:
+            self._refresh_available_symbols()
+        needle = canonical.upper()
+        exact = [s for s in self._available_symbols if s.upper() == needle]
+        starts = [s for s in self._available_symbols if s.upper().startswith(needle)]
+        ends = [s for s in self._available_symbols if s.upper().endswith(needle)]
+        contains = [s for s in self._available_symbols if needle in s.upper()]
+        dedup: dict[str, None] = {}
+        for name in [canonical, *exact, *starts, *ends, *contains]:
+            dedup.setdefault(name, None)
+        return list(dedup.keys())
+
+    def _try_select_symbol(self, symbol: str, retries: int = 3) -> bool:
+        if self._sim:
+            return True
+        for attempt in range(retries):
+            try:
+                if self._mt5.symbol_select(symbol, True):
+                    return True
+            except Exception:
+                pass
+            if attempt < retries - 1:
+                time.sleep(0.2 * (attempt + 1))
+        return False
+
+    def _resolve_and_select_symbol(self, canonical: str) -> str:
+        if self._sim:
+            return canonical
+        mapped = self._symbol_map.get(canonical)
+        if mapped:
+            if self._try_select_symbol(mapped):
+                return mapped
+
+        candidates = self._candidate_symbols(canonical)
+        for candidate in candidates:
+            if self._try_select_symbol(candidate):
+                if candidate != canonical:
+                    log.info("mt5_symbol_mapped canonical=%s broker_symbol=%s", canonical, candidate)
+                self._symbol_map[canonical] = candidate
+                return candidate
+
+        select_error = self._mt5.last_error() if hasattr(self._mt5, "last_error") else None
+        preview = candidates[:8]
+        raise RuntimeError(
+            f"MT5 symbol_select failed for required symbol: {canonical}; last_error={select_error}; candidates={preview}"
+        )
+
+    def _broker_symbol(self, pair: str) -> str:
+        if self._sim:
+            return pair
+        mapped = self._symbol_map.get(pair)
+        if mapped:
+            return mapped
+        return self._resolve_and_select_symbol(pair)
 
     def connect(self) -> bool:
         if self._sim:
@@ -78,27 +147,37 @@ class MT5Executor:
             log.error("MT5 not installed — cannot proceed without real MT5.")
             raise RuntimeError("MT5 not installed — real mode required.")
         if not self._mt5.initialize():
+            init_error = self._mt5.last_error() if hasattr(self._mt5, "last_error") else None
             try:
                 self._mt5.shutdown()
             except Exception:
                 pass
             if not self._mt5.initialize():
-                log.error("MT5 init failed — cannot proceed without real MT5.")
+                retry_error = self._mt5.last_error() if hasattr(self._mt5, "last_error") else None
+                log.error(
+                    "MT5 init failed — cannot proceed without real MT5. initial_last_error=%s retry_last_error=%s",
+                    init_error,
+                    retry_error,
+                )
                 raise RuntimeError("MT5 initialization failed — real mode required.")
         if MT5_LOGIN and MT5_PASSWORD and MT5_SERVER:
             if not self._mt5.login(MT5_LOGIN, MT5_PASSWORD, MT5_SERVER):
-                log.error("MT5 login failed — cannot proceed without real MT5.")
+                login_error = self._mt5.last_error() if hasattr(self._mt5, "last_error") else None
+                log.error("MT5 login failed — cannot proceed without real MT5. last_error=%s", login_error)
                 raise RuntimeError("MT5 login failed — real mode required.")
 
+        self._refresh_available_symbols()
         required_symbols: tuple[str, ...] = ("XAUUSD", "EURUSD", "GBPUSD")
         for symbol in required_symbols:
-            if not self._mt5.symbol_select(symbol, True):
-                log.error("mt5_symbol_select_failed symbol=%s", symbol)
-                raise RuntimeError(f"MT5 symbol_select failed for required symbol: {symbol}")
+            try:
+                self._resolve_and_select_symbol(symbol)
+            except RuntimeError as exc:
+                log.error("mt5_symbol_select_failed symbol=%s error=%s", symbol, exc)
+                raise
 
         self._last_success_at = time.time()
         self.ok = True
-        log.info("mt5_connected symbols=%s", required_symbols)
+        log.info("mt5_connected symbols=%s symbol_map=%s", required_symbols, self._symbol_map)
         self._mark_recovered()
         return True
 
@@ -216,11 +295,21 @@ class MT5Executor:
         }
         tf_id = tf_map.get(tf, self._mt5.TIMEFRAME_M30)
         try:
-            self._mt5.symbol_select(pair, True)
-            rates = self._mt5.copy_rates_from_pos(pair, tf_id, 0, n)
-            if rates is None or len(rates) < 50:
+            broker_symbol = self._broker_symbol(pair)
+            requested = max(1, int(n))
+            min_required = min(requested, 50)
+            rates = None
+            for attempt in range(3):
+                rates = self._mt5.copy_rates_from_pos(broker_symbol, tf_id, 0, requested)
+                if rates is not None and len(rates) >= min_required:
+                    break
+                if attempt < 2:
+                    time.sleep(0.35 * (attempt + 1))
+            got = 0 if rates is None else len(rates)
+            if rates is None or got < min_required:
                 raise RuntimeError(
-                    f"NO REAL MT5 DATA for {pair} {tf} (rates=None or too few). "
+                    f"NO REAL MT5 DATA for {pair} ({broker_symbol}) {tf} "
+                    f"(requested={requested}, min_required={min_required}, got={got}). "
                     "Fix: MT5 terminal open + logged in? Symbols visible in Market Watch? "
                     "History Center (F2) downloaded for M30/H1/D1?"
                 )
@@ -247,10 +336,11 @@ class MT5Executor:
         if self._degraded:
             return ExecutionPrecheck(False, "Execution degraded", 0.0, 0.0)
         try:
-            tick = self._mt5.symbol_info_tick(pair)
+            broker_symbol = self._broker_symbol(pair)
+            tick = self._mt5.symbol_info_tick(broker_symbol)
             if not tick:
                 return ExecutionPrecheck(False, "No symbol tick")
-            symbol = self._mt5.symbol_info(pair)
+            symbol = self._mt5.symbol_info(broker_symbol)
             if not symbol:
                 return ExecutionPrecheck(False, "No symbol info")
 
@@ -288,6 +378,14 @@ class MT5Executor:
             self._mt5.initialize()
 
         last_error: str | None = None
+        broker_symbol = pair
+        try:
+            broker_symbol = self._broker_symbol(pair)
+        except Exception as exc:
+            last_error = f"symbol_resolution_failed:{exc}"
+            log.error("order_failed pair=%s direction=%s reason=%s", pair, direction, last_error)
+            return None
+
         for attempt in range(3):
             # Inline spread / slippage guard just before each attempt to keep
             # protection close to the actual order_send call.
@@ -307,8 +405,8 @@ class MT5Executor:
                 break
 
             try:
-                tick = self._mt5.symbol_info_tick(pair)
-                sym = self._mt5.symbol_info(pair)
+                tick = self._mt5.symbol_info_tick(broker_symbol)
+                sym = self._mt5.symbol_info(broker_symbol)
                 if not tick or not sym:
                     last_error = "no_tick_or_symbol"
                     break
@@ -319,7 +417,7 @@ class MT5Executor:
                     log.warning("order_spread_blocked pair=%s direction=%s spread=%.6f max=%.6f", pair, direction, spread, max_spread)
                     return None
 
-                sym = self._mt5.symbol_info(pair)
+                sym = self._mt5.symbol_info(broker_symbol)
                 if not sym:
                     last_error = "no_symbol_info"
                     log.error("order_failed pair=%s direction=%s reason=no_symbol_info", pair, direction)
@@ -329,7 +427,7 @@ class MT5Executor:
                 order_type = self._mt5.ORDER_TYPE_BUY if direction == "BUY" else self._mt5.ORDER_TYPE_SELL
                 req = {
                     "action": self._mt5.TRADE_ACTION_DEAL,
-                    "symbol": pair,
+                    "symbol": broker_symbol,
                     "volume": lot,
                     "type": order_type,
                     "price": price,
